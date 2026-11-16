@@ -334,6 +334,12 @@ void GGL::PolicyVersionManager::RunSkillMatches(PPOLearner* ppo, Report& report)
 		report["Rating/" + pair.first] = pair.second;
 		report["Skill Matches/Opponent Rating " + pair.first] = oldVersion.ratings.GetRating(pair.first, skill.config.initialRating);
 	}
+	if (!skill.curRatings.data.empty()) {
+		double avgSum = 0;
+		for (auto& pair : skill.curRatings.data)
+			avgSum += pair.second;
+		report["Rating/Average"] = (float)(avgSum / skill.curRatings.data.size());
+	}
 
 	// What the rating of this iteration is based on
 	report["Skill Matches/Goals For"] = newGoals;
@@ -397,6 +403,7 @@ void GGL::PolicyVersionManager::RunSkillSession(PPOLearner* ppo, Report& report)
 	skill.curGoals = 0;
 
 	if (roundsPlayed == numRounds) {
+		double modeAvgSum = 0;
 		for (auto& pair : ratingSeries) {
 			auto& series = pair.second;
 			size_t first = series.size() / 4;
@@ -404,11 +411,17 @@ void GGL::PolicyVersionManager::RunSkillSession(PPOLearner* ppo, Report& report)
 			for (size_t i = first; i < series.size(); i++)
 				sum += series[i];
 			float average = (float)(sum / (series.size() - first));
+			modeAvgSum += average;
 
 			RG_LOG(" > Rating session result: " << pair.first << " = " << average << " (after the last round: " << series.back() << ")");
 			report["Rating/" + pair.first] = average;
 			report["Skill Matches/Rating After Last Round " + pair.first] = series.back();
 			skill.curRatings.data[pair.first] = average;
+		}
+		if (!ratingSeries.empty()) {
+			float overallAvg = (float)(modeAvgSum / ratingSeries.size());
+			RG_LOG(" > Rating session result: Average = " << overallAvg);
+			report["Rating/Average"] = overallAvg;
 		}
 
 		report["Skill Matches/Rounds"] = roundsPlayed;

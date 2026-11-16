@@ -80,6 +80,40 @@ public:
 	}
 };
 
+// Rewards a player for staying on the defensive side of the ball (between own goal and the ball).
+// Encourages proper rotation and prevents overcommitting ahead of the play.
+class BehindBallReward : public Reward {
+public:
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) {
+		float sign = (player.team == Team::BLUE) ? 1.f : -1.f;
+		// Positive when player is closer to own goal than the ball is
+		float diff = (state.ball.pos.y - player.pos.y) * sign;
+		return std::clamp(diff / 1000.f, -0.5f, 1.f);
+	}
+};
+
+// Penalizes crowding teammates in 2v2 and 3v3 so players spread out for passes and defense.
+// Returns 0 in 1v1 (no teammates).
+class TeamSpacingReward : public Reward {
+public:
+	static constexpr float MIN_DIST = 1500.f;
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) {
+		float minTeammateDist = 1e9f;
+		bool hasTeammate = false;
+		for (auto& other : state.players) {
+			if (other.team == player.team && other.carId != player.carId && !other.isDemoed) {
+				hasTeammate = true;
+				float d = (other.pos - player.pos).Length();
+				if (d < minTeammateDist)
+					minTeammateDist = d;
+			}
+		}
+		if (!hasTeammate || minTeammateDist >= MIN_DIST)
+			return 0.f;
+		return -(1.f - minTeammateDist / MIN_DIST);
+	}
+};
+
 // VelocityPlayerToBallReward for the player of each team that is nearest to the ball, nothing for its teammates.
 // In 1v1 it is the same reward. With teammates, the reward per player pays all of them to drive at the ball at once,
 // this one leaves the others free to take a position.
@@ -133,15 +167,19 @@ static const std::vector<RewardDef> REWARD_DEFS = {
 	// These are ok rewards that will produce a scoring bot in ~100m steps
 
 	// Movement
-	{ "Air", 0.25f, []() -> Reward* { return new AirReward(); }, "every step in the air" },
+	{ "Air", 0.1f, []() -> Reward* { return new AirReward(); }, "every step in the air" },
 
 	// Player-ball
 	{ "FaceBall", 0.25f, []() -> Reward* { return new FaceBallReward(); }, "facing the ball" },
 	{ "VelocityPlayerToBall", 4.f, []() -> Reward* { return new VelocityPlayerToBallReward(); }, "speed towards the ball" },
-	{ "StrongTouch", 60, []() -> Reward* { return new StrongTouchReward(20, 100); }, "hitting the ball hard (20-100 km/h change)" },
+	{ "StrongTouch", 75, []() -> Reward* { return new StrongTouchReward(20, 100); }, "hitting the ball hard (20-100 km/h change)" },
 
 	// Ball-goal
-	{ "VelocityBallToGoal", 2.f, []() -> Reward* { return new ZeroSumReward(new VelocityBallToGoalReward(), 1); }, "ball speed towards the opponent goal (zero-sum)" },
+	{ "VelocityBallToGoal", 3.f, []() -> Reward* { return new ZeroSumReward(new VelocityBallToGoalReward(), 1); }, "ball speed towards the opponent goal (zero-sum)" },
+
+	// Positioning & spacing
+	{ "BehindBall", 0.5f, []() -> Reward* { return new BehindBallReward(); }, "being between own goal and the ball" },
+	{ "TeamSpacing", 1.f, []() -> Reward* { return new TeamSpacingReward(); }, "spacing out from teammates in 2v2/3v3" },
 
 	// Boost
 	{ "PickupBoost", 10.f, []() -> Reward* { return new PickupBoostReward(); }, "collecting boost" },
@@ -150,10 +188,10 @@ static const std::vector<RewardDef> REWARD_DEFS = {
 	// Game events
 	{ "Bump", 20, []() -> Reward* { return new ZeroSumReward(new BumpReward(), 0.5f); }, "bumping an opponent (zero-sum)" },
 	{ "Demo", 80, []() -> Reward* { return new ZeroSumReward(new DemoReward(), 0.5f); }, "demolishing an opponent (zero-sum)" },
-	{ "Goal", 150, []() -> Reward* { return new GoalReward(); }, "goals: plus for scoring, minus for conceding" },
+	{ "Goal", 200, []() -> Reward* { return new GoalReward(); }, "goals: plus for scoring, minus for conceding" },
 
 	// Not used by default
-	{ "TouchAccel", 0, []() -> Reward* { return new TouchAccelReward(); }, "speeding the ball up with a touch (up to 110 km/h)" },
+	{ "TouchAccel", 15.f, []() -> Reward* { return new TouchAccelReward(); }, "speeding the ball up with a touch (up to 110 km/h)" },
 	{ "TouchBall", 0, []() -> Reward* { return new TouchBallReward(); }, "every step with a ball touch" },
 	{ "Speed", 0, []() -> Reward* { return new SpeedReward(); }, "own speed" },
 	{ "KickoffProximity", 0, []() -> Reward* { return new KickoffProximityReward(); }, "kickoffs: the team's nearest player being closer to the ball than the opponents' while it still lies on the centre spot (zero-sum)" },
@@ -1106,6 +1144,15 @@ int RunRating(Learner* learner, const Options& opt, int numRounds) {
 		RG_LOG("\tRating/" << pair.first << ": " << avg << " on average over the last " << (series.size() - avgStart) << " rounds (start " << start << ", after the last round " << series.back() << ")");
 
 		j["ratings"][pair.first] = { { "average", avg }, { "average_rounds", series.size() - avgStart }, { "start", start }, { "end", series.back() }, { "series", series } };
+	}
+
+	if (!ratingSeries.empty()) {
+		double avgAll = 0;
+		for (auto& pair : ratingSeries)
+			avgAll += j["ratings"][pair.first]["average"].get<double>();
+		avgAll /= ratingSeries.size();
+		RG_LOG("\tRating/Average: " << avgAll);
+		j["ratings"]["Average"] = { { "average", avgAll } };
 	}
 
 	j["opponents"] = nlohmann::json::array();
