@@ -1,6 +1,0 @@
-{
-    "model": "s-1v1",
-    "modes": "1v1",
-    "obs": "MultiModeObs",
-    "rewards": "Air=0.25, FaceBall=0.25, VelocityPlayerToBall=4, StrongTouch=60, VelocityBallToGoal=8, PickupBoost=10, SaveBoost=0.2, Bump=20, Demo=80, Goal=300, KickoffProximity=3"
-}

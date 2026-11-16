@@ -49,13 +49,7 @@ CMakeSettings.json
 # Anything starting with three underscores
 ___*
 
-# ML model files
-*.pt
-*.PT
-
 # Don't include libtorch if in local dir
 libtorch
-*.lt
 
-/checkpoints
 /wandb
