@@ -1,0 +1,96 @@
+{
+    "a_name": "/opt/deps/train_l/ckpt/2002032",
+    "b_name": "random actions",
+    "modes": {
+        "1v1": {
+            "a": {
+                "air_ratio": 0.8316795023696683,
+                "avg_ball_distance": 1788.2039346369381,
+                "avg_boost": 5.492494174743071,
+                "avg_speed": 644.2539153948067,
+                "ball_touches": 137,
+                "ball_touches_per_minute": 1.1413284952606635,
+                "goals": 6,
+                "kickoff_first_touches": 96,
+                "name": "/opt/deps/train_l/ckpt/2002032"
+            },
+            "b": {
+                "air_ratio": 0.8925133293838863,
+                "avg_ball_distance": 3133.925781126695,
+                "avg_boost": 4.621246211453275,
+                "avg_speed": 639.0849782829711,
+                "ball_touches": 27,
+                "ball_touches_per_minute": 0.22493335308056875,
+                "goals": 2,
+                "kickoff_first_touches": 19,
+                "name": "random actions"
+            },
+            "deterministic": false,
+            "game_minutes": 120.03555555555555,
+            "kickoffs": 692,
+            "mode": "1v1",
+            "no_touch_timeouts": 620,
+            "seed": 123
+        },
+        "2v2": {
+            "a": {
+                "air_ratio": 0.8326653213862559,
+                "avg_ball_distance": 1824.0042528482197,
+                "avg_boost": 5.1487122867033985,
+                "avg_speed": 644.328549986553,
+                "ball_touches": 277,
+                "ball_touches_per_minute": 2.307649585308057,
+                "goals": 12,
+                "kickoff_first_touches": 180,
+                "name": "/opt/deps/train_l/ckpt/2002032"
+            },
+            "b": {
+                "air_ratio": 0.8918561167061612,
+                "avg_ball_distance": 3217.2624444070657,
+                "avg_boost": 4.424742062031763,
+                "avg_speed": 640.0195721360947,
+                "ball_touches": 67,
+                "ball_touches_per_minute": 0.5581679502369669,
+                "goals": 4,
+                "kickoff_first_touches": 32,
+                "name": "random actions"
+            },
+            "deterministic": false,
+            "game_minutes": 120.03555555555555,
+            "kickoffs": 617,
+            "mode": "2v2",
+            "no_touch_timeouts": 538,
+            "seed": 123
+        },
+        "3v3": {
+            "a": {
+                "air_ratio": 0.8362121099921012,
+                "avg_ball_distance": 1919.7476108791468,
+                "avg_boost": 5.023179109090158,
+                "avg_speed": 638.5821010425122,
+                "ball_touches": 415,
+                "ball_touches_per_minute": 3.4573089454976307,
+                "goals": 18,
+                "kickoff_first_touches": 223,
+                "name": "/opt/deps/train_l/ckpt/2002032"
+            },
+            "b": {
+                "air_ratio": 0.8912976402053713,
+                "avg_ball_distance": 3371.515655759975,
+                "avg_boost": 4.4157123355706585,
+                "avg_speed": 621.156735120607,
+                "ball_touches": 104,
+                "ball_touches_per_minute": 0.8664099526066351,
+                "goals": 6,
+                "kickoff_first_touches": 41,
+                "name": "random actions"
+            },
+            "deterministic": false,
+            "game_minutes": 120.03555555555555,
+            "kickoffs": 574,
+            "mode": "3v3",
+            "no_touch_timeouts": 487,
+            "seed": 123
+        }
+    }
+}

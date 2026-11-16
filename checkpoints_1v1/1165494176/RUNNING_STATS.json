@@ -1,0 +1,14 @@
+{
+    "mirror_x": -1,
+    "return_stat": {
+        "count": 7060500,
+        "mean": 175.5369735836666,
+        "var": 250642348915.33252
+    },
+    "run_id": "vn27gbrz",
+    "skill_ratings": {
+        "1v1": 1259.8929443359375
+    },
+    "total_iterations": 47070,
+    "total_timesteps": 1165494176
+}

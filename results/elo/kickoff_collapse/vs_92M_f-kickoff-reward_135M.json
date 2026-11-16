@@ -1,0 +1,36 @@
+{
+    "a": {
+        "air_ratio": 0.08674963834391401,
+        "avg_ball_distance": 1013.8295937497978,
+        "avg_boost": 14.303591843848906,
+        "avg_speed": 1153.0856409116034,
+        "ball_touches": 3143,
+        "ball_touches_per_minute": 33.818729600803415,
+        "goals": 141,
+        "kickoff_first_touches": 146,
+        "model": "s",
+        "name": "/opt/deps/exp/race4/f-kickoff-reward/ckpt/135032128"
+    },
+    "b": {
+        "air_ratio": 0.09432947168322514,
+        "avg_ball_distance": 1179.835768888584,
+        "avg_boost": 12.014810916770488,
+        "avg_speed": 1118.205813458189,
+        "ball_touches": 1377,
+        "ball_touches_per_minute": 14.816541730927872,
+        "goals": 40,
+        "kickoff_first_touches": 123,
+        "model": "s",
+        "name": "/opt/deps/long/ckpt/92001096"
+    },
+    "deterministic": false,
+    "game_minutes": 92.93666666666667,
+    "kickoffs": 181,
+    "max_seconds": 240.0,
+    "max_seconds_ends": 0,
+    "mode": "1v1",
+    "no_touch_timeout": 0.0,
+    "no_touch_timeouts": 0,
+    "real_seconds": 11.027154639,
+    "seed": 123
+}

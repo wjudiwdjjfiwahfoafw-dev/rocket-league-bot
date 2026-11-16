@@ -1,0 +1,28 @@
+{
+    "a": {
+        "air_ratio": 0.7122469135802469,
+        "avg_ball_distance": 860.5049047540028,
+        "avg_boost": 15.555321723665232,
+        "avg_speed": 698.1032513856413,
+        "ball_touches": 6527,
+        "ball_touches_per_minute": 9.065277777777778,
+        "goals": 212,
+        "kickoff_first_touches": 1762,
+        "name": "checkpoints/14102144"
+    },
+    "b": {
+        "air_ratio": 0.8925385802469136,
+        "avg_ball_distance": 4045.7076066179866,
+        "avg_boost": 3.577982516548625,
+        "avg_speed": 595.3637854209701,
+        "ball_touches": 209,
+        "ball_touches_per_minute": 0.2902777777777778,
+        "goals": 61,
+        "kickoff_first_touches": 29,
+        "name": "random actions"
+    },
+    "deterministic": true,
+    "game_minutes": 720.0,
+    "kickoffs": 1991,
+    "no_touch_timeouts": 1702
+}

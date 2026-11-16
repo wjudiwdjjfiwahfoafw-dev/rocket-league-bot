@@ -1,0 +1,28 @@
+{
+    "a": {
+        "air_ratio": 0.8095185185185185,
+        "avg_ball_distance": 1048.1134875409869,
+        "avg_boost": 7.304800302215886,
+        "avg_speed": 759.4811272785888,
+        "ball_touches": 768,
+        "ball_touches_per_minute": 6.4,
+        "goals": 40,
+        "kickoff_first_touches": 345,
+        "name": "low entropy scale (0.01), 16821376 steps: results/entropy_test/low_entropy_0.01/16821376"
+    },
+    "b": {
+        "air_ratio": 0.8909722222222223,
+        "avg_ball_distance": 3700.43024765495,
+        "avg_boost": 3.9978042400850122,
+        "avg_speed": 616.834123409622,
+        "ball_touches": 37,
+        "ball_touches_per_minute": 0.30833333333333335,
+        "goals": 8,
+        "kickoff_first_touches": 3,
+        "name": "random actions"
+    },
+    "deterministic": false,
+    "game_minutes": 120.0,
+    "kickoffs": 442,
+    "no_touch_timeouts": 379
+}

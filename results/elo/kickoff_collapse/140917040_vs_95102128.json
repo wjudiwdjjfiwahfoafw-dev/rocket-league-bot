@@ -1,0 +1,36 @@
+{
+    "a": {
+        "air_ratio": 0.07478183650118687,
+        "avg_ball_distance": 1127.2912584255919,
+        "avg_boost": 15.93711418478834,
+        "avg_speed": 1162.9818733532838,
+        "ball_touches": 3899,
+        "ball_touches_per_minute": 29.963112864388545,
+        "goals": 200,
+        "kickoff_first_touches": 53,
+        "model": "s",
+        "name": "/opt/deps/long/ckpt/140917040"
+    },
+    "b": {
+        "air_ratio": 0.09566746930341377,
+        "avg_ball_distance": 1530.5206965212878,
+        "avg_boost": 8.965194952534107,
+        "avg_speed": 1124.350366514105,
+        "ball_touches": 1933,
+        "ball_touches_per_minute": 14.854756903529895,
+        "goals": 114,
+        "kickoff_first_touches": 299,
+        "model": "s",
+        "name": "/opt/deps/long/ckpt/95102128"
+    },
+    "deterministic": false,
+    "game_minutes": 130.12666666666667,
+    "kickoffs": 314,
+    "max_seconds": 240.0,
+    "max_seconds_ends": 0,
+    "mode": "1v1",
+    "no_touch_timeout": 0.0,
+    "no_touch_timeouts": 0,
+    "real_seconds": 12.2300208,
+    "seed": 123
+}

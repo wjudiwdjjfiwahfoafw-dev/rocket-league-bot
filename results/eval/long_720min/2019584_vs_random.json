@@ -1,0 +1,28 @@
+{
+    "a": {
+        "air_ratio": 0.8671018518518518,
+        "avg_ball_distance": 1640.9888300349153,
+        "avg_boost": 3.976232924596763,
+        "avg_speed": 696.6417013468612,
+        "ball_touches": 1161,
+        "ball_touches_per_minute": 1.6125,
+        "goals": 52,
+        "kickoff_first_touches": 787,
+        "name": "results/policy_snapshots/2019584"
+    },
+    "b": {
+        "air_ratio": 0.8920138888888889,
+        "avg_ball_distance": 3181.057818104238,
+        "avg_boost": 4.281358492483557,
+        "avg_speed": 640.6198393634563,
+        "ball_touches": 183,
+        "ball_touches_per_minute": 0.25416666666666665,
+        "goals": 15,
+        "kickoff_first_touches": 124,
+        "name": "random actions"
+    },
+    "deterministic": false,
+    "game_minutes": 720.0,
+    "kickoffs": 3688,
+    "no_touch_timeouts": 3605
+}
