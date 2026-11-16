@@ -69,12 +69,12 @@ exec "$BOT" \
 	--entropy-scale 0.009 \
 	--random-state-prob 0.5 \
 	--random-ball-speed 2000 \
-	--rewards VelocityBallToGoal=8,Goal=300,KickoffProximity=3,VelocityPlayerToBall=1,NearestVelocityToBall=3 \
+	--rewards VelocityBallToGoal=8,Goal=300,KickoffProximity=3,VelocityPlayerToBall=1,NearestVelocityToBall=3,BehindBall=0.5,TeamSpacing=1,TouchAccel=15 \
 	--train-vs-old 0.15 \
 	--ts-per-save 10m \
 	--keep-checkpoints 2 \
 	--skill-tracker \
-	--skill-minutes 10 \
+	--skill-minutes 15 \
 	--skill-rounds 10 \
 	--skill-arenas 48 \
 	--ts-per-version 25m \
