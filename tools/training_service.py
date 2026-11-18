@@ -40,6 +40,24 @@ def assess_goal(state, target=1600.0):
             'screen_gap': max(0.0, target - screen) if screen is not None else None}
 
 
+def calibration_results():
+    results = []
+    root = ROOT / 'results/target1600-calibration'
+    if not root.exists():
+        return results
+    for trial in sorted(root.glob('temperature-*')):
+        record = {'name': trial.name}
+        for seed, rounds, key in [(1009, 40, 'screen'), (2003, 80, 'confirmation'), (4001, 80, 'audit')]:
+            files = list((trial / 'eval').glob(f'*-{seed}-{rounds}.json'))
+            if files:
+                raw = json.loads(files[0].read_text())
+                record[key] = {m: raw['ratings'][m]['average'] for m in ('1v1', '2v2', '3v3', 'Ranking')}
+        record['verified'] = all(record.get(k, {}).get('Ranking', 0) >= 1600
+                                 for k in ('screen', 'confirmation', 'audit'))
+        results.append(record)
+    return results
+
+
 def snapshot(campaign):
     state = json.loads((campaign / 'state.json').read_text())
     rows = {}
@@ -48,7 +66,7 @@ def snapshot(campaign):
             if line.endswith('\n') and line.strip():
                 row = json.loads(line)
                 rows[int(row['Total Timesteps'])] = row
-    return {'state': state, 'goal': assess_goal(state), 'rows': [rows[k] for k in sorted(rows)]}
+    return {'state': state, 'goal': assess_goal(state), 'calibrations': calibration_results(), 'rows': [rows[k] for k in sorted(rows)]}
 
 
 def backup(campaign, destination, branch, status):
