@@ -628,7 +628,7 @@ def load_best_remote_snapshot(args, repo: str | None, gh_token: str | None) -> t
                     discovered_url = isnap['status_url']
                 max_step = max((int(r['Total Timesteps']) for r in isnap.get('rows') or []), default=-1)
                 hist_len = len(((isnap.get('state') or {}).get('history')) or [])
-                candidates.append((hist_len, max_step, f'github-issue#{args.issue}', isnap))
+                candidates.append((2, hist_len, max_step, f'github-issue#{args.issue}', isnap))
         except Exception as exc:
             print(f'Issue poll note: {exc}', flush=True)
 
@@ -639,11 +639,11 @@ def load_best_remote_snapshot(args, repo: str | None, gh_token: str | None) -> t
             if 'state' in raw and 'rows' in raw:
                 raw.setdefault('run_id', campaign_run_id((raw['state'].get('config')) or {}))
                 # Merge eval_extras from issue snapshot if present.
-                if candidates and 'eval_extras' in candidates[0][3]:
-                    raw.setdefault('eval_extras', candidates[0][3]['eval_extras'])
+                if candidates and 'eval_extras' in candidates[0][4]:
+                    raw.setdefault('eval_extras', candidates[0][4]['eval_extras'])
                 max_step = max((int(r['Total Timesteps']) for r in raw.get('rows') or []), default=-1)
                 hist_len = len((raw['state'].get('history')) or [])
-                candidates.append((hist_len + 1, max_step, 'live-preview-http', raw))
+                candidates.append((3, hist_len, max_step, 'live-preview-http', raw))
         except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
             print(f'Preview poll note ({discovered_url}): {exc}', flush=True)
 
@@ -653,20 +653,20 @@ def load_best_remote_snapshot(args, repo: str | None, gh_token: str | None) -> t
             lsnap = read_campaign_snapshot(args.fallback_campaign)
             max_step = max((int(r['Total Timesteps']) for r in lsnap.get('rows') or []), default=-1)
             hist_len = len(((lsnap.get('state') or {}).get('history')) or [])
-            candidates.append((hist_len, max_step, f'local:{args.fallback_campaign.name}', lsnap))
+            candidates.append((1, hist_len, max_step, f'local:{args.fallback_campaign.name}', lsnap))
         except Exception as exc:
             print(f'Fallback campaign note: {exc}', flush=True)
 
     if not candidates:
         return None, 'none'
 
-    # Merge rows from all available sources sharing the same run_id so trimmed frames never miss early steps!
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    _, _, best_source, best_snap = candidates[0]
+    # Prefer live preview > live GitHub Issue > checked-out backup, and merge all rows with same run_id.
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    _, _, _, best_source, best_snap = candidates[0]
     target_run_id = best_snap.get('run_id')
     merged_rows: dict[int, dict] = {}
     merged_extras: dict = {}
-    for _, _, _, snap in reversed(candidates):
+    for _, _, _, _, snap in reversed(candidates):
         if snap.get('run_id') != target_run_id:
             continue
         merged_extras.update(snap.get('eval_extras') or {})
