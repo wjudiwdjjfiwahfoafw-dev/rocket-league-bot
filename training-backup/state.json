@@ -1,12 +1,12 @@
 {
   "config": {
-    "base": "checkpoints/3137998278",
+    "base": "checkpoints/3244539846",
     "preset_sha256": "0157781c2e10d1973db968319e90da89755a54c2e68a4ffcfc15bf34b244ced4",
-    "parent_steps": 3137998278,
-    "seed": 20261118,
+    "parent_steps": 3244539846,
+    "seed": 20261120,
     "screen_seed": 1009,
     "confirm_seed": 2003,
-    "audit_seed": 9001,
+    "audit_seed": 9007,
     "rounds": 40,
     "train_args": [
       "--threads",
@@ -24,28 +24,55 @@
       "--minibatch-size",
       "1008",
       "--lr",
-      "8e-05",
+      "0.00011",
       "--skill-minutes",
-      "15",
+      "20.0",
       "--ts-per-save",
-      "5m",
+      "10m",
       "--keep-checkpoints",
       "2",
+      "--critic-lr",
+      "0.0002",
+      "--epochs",
+      "2",
+      "--entropy-scale",
+      "0.0022",
+      "--norm-advantages",
+      "mode",
+      "--target-kl",
+      "0.02",
+      "--return-stat-max-count",
+      "200000",
       "--random-state-prob",
-      "0.25",
+      "0.0",
+      "--tactical-state-prob",
+      "0.22",
       "--train-vs-old",
-      "0.35",
+      "0.3",
+      "--ts-per-version",
+      "10m",
+      "--max-versions",
+      "16",
+      "--mask-entropy",
+      "--fuzzed-kickoffs",
+      "--pfsp",
       "--rewards",
-      "VelocityBallToGoal=8,Goal=600,VelocityPlayerToBall=0,NearestVelocityToBall=0,TeamSpacing=1,TouchAccel=5,BehindBall=0,FaceBall=0,StrongTouch=25,PickupBoost=2,SaveBoost=0.2,Bump=10,Demo=20"
+      "Air=0,FaceBall=0,VelocityPlayerToBall=0,NearestVelocityToBall=0,TeamVelocityToBall=0,StrongTouch=0,TouchAccel=0,VelocityBallToGoal=0,BehindBall=0,TeamSpacing=0,PickupBoost=0,Goal=600,GoalSpeed=150,ScorerAssist=100,Save=65,Shot=40,DirectionalTouch=35,ObjectiveBallVel=7.0,KickoffSpeed=4.0,TeamPressure=1.5,DefensiveCover=0.65,DoubleCommit=1.8,PickupBoostZS=8.0,SaveBoost=0.04,Demo=30,Bump=4"
     ],
     "minutes": [
-      12,
-      18,
-      18,
-      18,
-      18,
-      18,
-      18
+      10,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      15,
+      5
     ],
     "modes": [
       "1v1",
@@ -53,117 +80,32 @@
       "3v3"
     ],
     "protocol": "anchored-v1",
-    "reference_pool": "training-backup/pool"
+    "reference_pool": "training-backup/pool",
+    "extra_versions": [
+      "checkpoints/3035220582",
+      "checkpoints/3043214022",
+      "checkpoints/3137998278"
+    ]
   },
   "pool_sha256": "aa048b453da50d8c7c96913692d3e4d70bd141b5247cbd6519fe11589539d81c",
   "history": [
     {
       "stage": 0,
-      "start_steps": 3137998278,
-      "steps": 3137998278,
+      "start_steps": 3244539846,
+      "steps": 3244539846,
       "train_seconds": 0,
       "steps_per_second": null,
       "screen": {
-        "1v1": 1471.2251139322916,
-        "2v2": 1654.6653930664063,
-        "3v3": 1601.865340169271,
-        "Ranking": 1575.918615722656
+        "1v1": 1524.3941853841145,
+        "2v2": 1658.8246744791666,
+        "3v3": 1592.7299886067708,
+        "Ranking": 1591.9829494900175
       },
       "confirm": {
-        "1v1": 1465.161063639323,
-        "2v2": 1653.010723876953,
-        "3v3": 1603.681815592448,
-        "Ranking": 1573.9512010362414
-      },
-      "promoted": true
-    },
-    {
-      "stage": 1,
-      "start_steps": 3137998278,
-      "steps": 3152126406,
-      "train_seconds": 738.8031070729999,
-      "steps_per_second": 19122.994834135185,
-      "screen": {
-        "1v1": 1503.6647542317708,
-        "2v2": 1628.421280924479,
-        "3v3": 1557.4703125,
-        "Ranking": 1563.1854492187497
-      },
-      "confirm": null,
-      "promoted": false
-    },
-    {
-      "stage": 2,
-      "start_steps": 3152126406,
-      "steps": 3174237894,
-      "train_seconds": 1083.8001899330002,
-      "steps_per_second": 20401.812257817484,
-      "screen": {
-        "1v1": 1478.551904296875,
-        "2v2": 1671.8646240234375,
-        "3v3": 1580.1686930338542,
-        "Ranking": 1576.8617404513889
-      },
-      "confirm": {
-        "1v1": 1490.7980550130208,
-        "2v2": 1688.1352172851562,
-        "3v3": 1597.8662109375,
-        "Ranking": 1592.2664944118924
-      },
-      "promoted": true
-    },
-    {
-      "stage": 3,
-      "start_steps": 3174237894,
-      "steps": 3196252614,
-      "train_seconds": 1083.391741455,
-      "steps_per_second": 20320.18443341107,
-      "screen": {
-        "1v1": 1506.5528116861979,
-        "2v2": 1652.8586669921874,
-        "3v3": 1519.0134684244792,
-        "Ranking": 1559.4749823676214
-      },
-      "confirm": null,
-      "promoted": false
-    },
-    {
-      "stage": 4,
-      "start_steps": 3196252614,
-      "steps": 3220299462,
-      "train_seconds": 1083.8025579260002,
-      "steps_per_second": 22187.48038943258,
-      "screen": {
-        "1v1": 1507.0229899088542,
-        "2v2": 1673.2426188151042,
-        "3v3": 1557.6058797200521,
-        "Ranking": 1579.2904961480035
-      },
-      "confirm": {
-        "1v1": 1509.079414876302,
-        "2v2": 1675.5878275553384,
-        "3v3": 1597.4882548014323,
-        "Ranking": 1594.0518324110242
-      },
-      "promoted": false
-    },
-    {
-      "stage": 5,
-      "start_steps": 3220299462,
-      "steps": 3244539846,
-      "train_seconds": 1082.2436195499995,
-      "steps_per_second": 22398.269264067578,
-      "screen": {
-        "1v1": 1520.4610310872397,
-        "2v2": 1662.8069417317708,
-        "3v3": 1577.3252604166667,
-        "Ranking": 1586.864411078559
-      },
-      "confirm": {
-        "1v1": 1556.9312032063801,
-        "2v2": 1672.1250020345053,
-        "3v3": 1589.4149576822917,
-        "Ranking": 1606.1570543077257
+        "1v1": 1550.9982645670573,
+        "2v2": 1647.7411743164062,
+        "3v3": 1608.5981160481772,
+        "Ranking": 1602.4458516438801
       },
       "promoted": true
     }
@@ -171,25 +113,25 @@
   "best": {
     "steps": 3244539846,
     "screen": {
-      "1v1": 1520.4610310872397,
-      "2v2": 1662.8069417317708,
-      "3v3": 1577.3252604166667,
-      "Ranking": 1586.864411078559
+      "1v1": 1524.3941853841145,
+      "2v2": 1658.8246744791666,
+      "3v3": 1592.7299886067708,
+      "Ranking": 1591.9829494900175
     },
     "confirm": {
-      "1v1": 1556.9312032063801,
-      "2v2": 1672.1250020345053,
-      "3v3": 1589.4149576822917,
-      "Ranking": 1606.1570543077257
+      "1v1": 1550.9982645670573,
+      "2v2": 1647.7411743164062,
+      "3v3": 1608.5981160481772,
+      "Ranking": 1602.4458516438801
     }
   },
   "pending": {
-    "stage": 6,
+    "stage": 1,
     "start_steps": 3244539846,
     "seconds": 0,
     "trained": false
   },
   "status": "paused",
-  "working_directory": "results/weights1700/campaign",
+  "working_directory": "results/weights1700-v2/campaign",
   "target_ranking": 1700.0
 }
