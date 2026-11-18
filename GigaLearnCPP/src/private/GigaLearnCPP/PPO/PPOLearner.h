@@ -52,6 +52,7 @@ namespace GGL {
 		// Averages of the values that Learn() reports
 		struct LearnStats {
 			AvgTracker entropy, divergence, policyLoss, relEntropyLoss, criticLoss, guidingLoss, ratio, clip;
+			float lastBatchKL = 0;
 		};
 
 		// The same values for a single minibatch

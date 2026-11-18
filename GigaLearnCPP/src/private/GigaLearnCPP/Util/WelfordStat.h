@@ -22,6 +22,14 @@ namespace GGL {
 			}
 		}
 
+		// Keeps variance identical while capping the effective history length so statistics adapt smoothly to new rewards.
+		void CapCount(int64_t maxCount) {
+			if (maxCount >= 2 && count > maxCount) {
+				runningVariance *= (double)(maxCount - 1) / (double)(count - 1);
+				count = maxCount;
+			}
+		}
+
 		void Reset() {
 			*this = WelfordStat();
 		}

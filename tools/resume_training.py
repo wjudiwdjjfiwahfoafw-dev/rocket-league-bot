@@ -39,10 +39,47 @@ def restore(snapshot=SNAPSHOT, work=WORK):
     return json.loads((work / 'state.json').read_text())
 
 
+def build_resume_command(state, work, without_monitor=False, backup_interval=1800):
+    config = state['config']
+    cmd = [sys.executable, str(ROOT / 'tools/train_ranked.py'), '--base', config['base'],
+           '--out', str(work.relative_to(ROOT)), '--minutes', str(sum(config['minutes'])),
+           '--pilot-minutes', str(config['minutes'][0]),
+           '--block-minutes', str(max(config['minutes'][1:] or config['minutes'])),
+           '--rounds', str(config['rounds']), '--seed', str(config['seed']),
+           '--audit-seed', str(config['audit_seed'])]
+    if state.get('target_ranking'):
+        cmd += ['--target-ranking', str(state['target_ranking'])]
+    if config.get('reference_pool'):
+        cmd += ['--reference-pool', config['reference_pool']]
+    if config.get('extra_versions'):
+        cmd += ['--extra-versions', *config['extra_versions']]
+    train_args = config['train_args']
+    defaults = {'--lr': '1e-4', '--batch-size': '12096', '--skill-minutes': '15', '--ts-per-save': '5m'}
+    for flag in ('--threads', '--minibatch-size', '--lr', '--critic-lr', '--epochs', '--batch-size',
+                 '--entropy-scale', '--norm-advantages', '--target-kl', '--gamma', '--gae-lambda',
+                 '--return-stat-max-count', '--random-state-prob', '--tactical-state-prob',
+                 '--train-vs-old', '--ts-per-version', '--max-versions', '--skill-minutes',
+                 '--ts-per-save', '--rewards'):
+        if flag not in train_args:
+            continue
+        value = train_args[train_args.index(flag) + 1]
+        if defaults.get(flag) == value:
+            continue  # preserve exact default config entries
+        cmd += ['--minibatch' if flag == '--minibatch-size' else flag, value]
+    for flag in ('--mask-entropy', '--fuzzed-kickoffs', '--pfsp'):
+        if flag in train_args:
+            cmd.append(flag)
+    if not without_monitor:
+        cmd += ['--monitor', '--github-backup', '--backup-interval', str(backup_interval)]
+    return cmd
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--restore-only', action='store_true')
     parser.add_argument('--without-monitor', action='store_true')
+    parser.add_argument('--backup-interval', type=int, default=1800,
+                        help='Minimum seconds between GitHub auto-backups (default: 1800 = 30 minutes)')
     args = parser.parse_args()
     saved = json.loads((SNAPSHOT / 'state.json').read_text())
     work = ROOT / saved.get('working_directory', str(WORK.relative_to(ROOT)))
@@ -51,32 +88,11 @@ def main():
     state = restore(work=work)
     if args.restore_only:
         return
-    config = state['config']
     if state['status'] == 'complete':
         print('Campaign complete; create a new experiment to train further.')
         return
-    # Exact options of the paused campaign. The driver validates config and pool digest.
-    cmd = [sys.executable, str(ROOT / 'tools/train_ranked.py'), '--base', config['base'],
-           '--out', str(work.relative_to(ROOT)), '--minutes', str(sum(config['minutes'])),
-           '--pilot-minutes', str(config['minutes'][0]),
-           '--block-minutes', str(max(config['minutes'][1:] or config['minutes'])),
-           '--rounds', str(config['rounds']), '--seed', str(config['seed'])]
-    cmd += ['--audit-seed', str(config['audit_seed'])]
-    if state.get('target_ranking'):
-        cmd += ['--target-ranking', str(state['target_ranking'])]
-    if config.get('reference_pool'):
-        cmd += ['--reference-pool', config['reference_pool']]
-    train_args = config['train_args']
-    for flag in ('--threads', '--minibatch-size', '--lr', '--entropy-scale',
-                 '--random-state-prob', '--train-vs-old', '--rewards'):
-        if flag not in train_args:
-            continue
-        value = train_args[train_args.index(flag) + 1]
-        if flag == '--lr' and value == '1e-4':
-            continue  # preserve the exact default config, not float-formatted 0.0001
-        cmd += ['--minibatch' if flag == '--minibatch-size' else flag, value]
-    if not args.without_monitor:
-        cmd += ['--monitor', '--github-backup']
+    cmd = build_resume_command(state, work, without_monitor=args.without_monitor,
+                               backup_interval=args.backup_interval)
     print('Resuming only because this script was explicitly invoked.', flush=True)
     subprocess.run(cmd, cwd=ROOT, check=True)
 

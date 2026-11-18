@@ -5,6 +5,12 @@
 
 namespace GGL {
 
+	enum class AdvantageNormMode {
+		OFF = 0,
+		ALL = 1,
+		PER_MODE = 2 // Normalize advantages independently for 1v1, 2v2, and 3v3
+	};
+
 	// https://github.com/AechPro/rlgym-ppo/blob/main/rlgym_ppo/ppo/ppo_learner.py
 	struct PPOLearnerConfig {
 
@@ -46,6 +52,13 @@ namespace GGL {
 		bool maskEntropy = false; 
 
 		float clipRange = 0.2f;
+
+		// Normalize policy advantages (zero mean, unit std) without altering critic value targets.
+		AdvantageNormMode normalizeAdvantages = AdvantageNormMode::OFF;
+
+		// Optional approximate-KL threshold for multi-epoch safety (0 = off).
+		// If a batch exceeds 1.5 * targetKL after the first update, remaining batches of the iteration are skipped.
+		float targetKL = 0.f;
 		
 		// Temperature of the policy's softmax distribution
 		float policyTemperature = 1;

@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = {'CRITIC.lt', 'CRITIC_OPTIM.lt', 'POLICY.lt', 'POLICY_OPTIM.lt',
          'SHARED_HEAD.lt', 'SHARED_HEAD_OPTIM.lt', 'SHARED_HEAD_SLOTS.lt',
          'INFO.json', 'RUNNING_STATS.json'}
+DEFAULT_BACKUP_INTERVAL = 1800  # 30 minutes between GitHub auto-backups
+BACKUP_RETRY_SECONDS = 60       # Retry cadence only when a due backup is incomplete or failed
 
 
 def git(*args):
@@ -69,11 +71,49 @@ def snapshot(campaign):
     return {'state': state, 'goal': assess_goal(state, state.get('target_ranking', 1600.0)), 'calibrations': calibration_results(), 'rows': [rows[k] for k in sorted(rows)]}
 
 
-def backup(campaign, destination, branch, status):
+def read_manifest_created(destination):
+    marker = destination / 'manifest.json'
+    if not marker.exists():
+        return None
+    try:
+        created = json.loads(marker.read_text()).get('created')
+        return float(created) if created is not None else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def last_backup_time(destination, status):
+    if status.get('push_pending'):
+        return None
+    times = [t for t in (status.get('last_success'), read_manifest_created(destination)) if t is not None]
+    return max(times) if times else None
+
+
+def seconds_until_backup_due(destination, status, min_interval, now=None):
+    if min_interval <= 0 or status.get('push_pending'):
+        return 0.0
+    last_ts = last_backup_time(destination, status)
+    if last_ts is None:
+        return 0.0
+    cur = time.time() if now is None else float(now)
+    return max(0.0, (last_ts + min_interval) - cur)
+
+
+def backup(campaign, destination, branch, status, min_interval=0, now=None):
+    cur_now = time.time() if now is None else float(now)
+    status['interval_seconds'] = min_interval
+    wait_s = seconds_until_backup_due(destination, status, min_interval, now=cur_now)
+    if wait_s > 0:
+        status['next_due'] = cur_now + wait_s
+        return False
     if git('branch', '--show-current') != branch:
         raise RuntimeError('Branch changed; refusing backup')
-    # Retry a previous failed push even when there is no new checkpoint.
-    git('push', 'origin', branch)
+    # Retry a previously unpushed local commit before inspecting new checkpoints.
+    local_head = git('rev-parse', 'HEAD')
+    remote_line = git('ls-remote', 'origin', 'refs/heads/' + branch).split()
+    if status.get('push_pending') or not remote_line or remote_line[0] != local_head:
+        git('push', 'origin', branch)
+        status['push_pending'] = False
     candidates = sorted((p for p in (campaign / 'learner').iterdir() if p.name.isdecimal()), key=lambda p: int(p.name))
     latest = candidates[-1]
     state = json.loads((campaign / 'state.json').read_text())
@@ -89,9 +129,11 @@ def backup(campaign, destination, branch, status):
     identity = hashlib.sha256(json.dumps({'files': before, 'history': state['history'],
         'best': state['best'], 'audit': state.get('audit'), 'status': state['status']}, sort_keys=True).encode()).hexdigest()
     marker = destination / 'manifest.json'
-    if marker.exists() and json.loads(marker.read_text())['identity'] == identity:
-        status.update(last_success=time.time(), checkpoint=int(latest.name), commit=git('rev-parse', 'HEAD'), error=None)
-        return
+    if marker.exists() and json.loads(marker.read_text()).get('identity') == identity:
+        done = time.time() if now is None else cur_now
+        status.update(last_success=done, next_due=(done + min_interval) if min_interval > 0 else None,
+                      checkpoint=int(latest.name), commit=git('rev-parse', 'HEAD'), push_pending=False, error=None)
+        return True
     with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix='backup-') as tmp:
         staging = Path(tmp) / 'snapshot'
         staging.mkdir()
@@ -114,8 +156,9 @@ def backup(campaign, destination, branch, status):
             shutil.copytree(campaign / folder, staging / folder)
         hashes = {str(p.relative_to(staging)): hashlib.sha256(p.read_bytes()).hexdigest()
                   for p in staging.rglob('*') if p.is_file()}
+        created_ts = time.time() if now is None else cur_now
         (staging / 'manifest.json').write_text(json.dumps({'checkpoint': steps, 'identity': identity,
-            'created': time.time(), 'sha256': hashes, 'source_commit': git('rev-parse', 'HEAD')}, indent=2) + '\n')
+            'created': created_ts, 'sha256': hashes, 'source_commit': git('rev-parse', 'HEAD')}, indent=2) + '\n')
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.exists():
             shutil.rmtree(destination)
@@ -124,12 +167,16 @@ def backup(campaign, destination, branch, status):
     git('add', '--', relative)
     if git('diff', '--cached', '--name-only', '--', relative):
         git('commit', '--only', '-m', f'Back up ranked checkpoint {latest.name}', '--', relative)
+        status['push_pending'] = True
     git('push', 'origin', branch)
     commit = git('rev-parse', 'HEAD')
     # Verify the remote points at the pushed commit, not merely that a local commit exists.
     if git('ls-remote', 'origin', 'refs/heads/' + branch).split()[0] != commit:
         raise RuntimeError('Remote commit verification failed')
-    status.update(last_success=time.time(), checkpoint=steps, commit=commit, error=None)
+    done = time.time() if now is None else cur_now
+    status.update(last_success=done, next_due=(done + min_interval) if min_interval > 0 else None,
+                  checkpoint=steps, commit=commit, push_pending=False, error=None)
+    return True
 
 
 def main():
@@ -137,24 +184,44 @@ def main():
     parser.add_argument('campaign', type=Path)
     parser.add_argument('--port', type=int, default=8080)
     parser.add_argument('--backup', action='store_true', help='Commit checkpoint snapshots and push current branch')
-    parser.add_argument('--interval', type=int, default=60)
+    parser.add_argument('--interval', type=int, default=DEFAULT_BACKUP_INTERVAL,
+                        help='Minimum seconds between automatic GitHub backups (default: 1800 = 30 minutes)')
     args = parser.parse_args()
     args.campaign = args.campaign.resolve()
+    interval = max(60, int(args.interval))
     os.chdir(ROOT)
     (ROOT / 'build').mkdir(exist_ok=True)
     lock = (ROOT / 'build/training-service.lock').open('w')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     branch = git('branch', '--show-current')
-    status = {'enabled': args.backup, 'last_success': None, 'error': None}
+    dest = ROOT / 'training-backup'
+    prior_ts = read_manifest_created(dest)
+    status = {
+        'enabled': args.backup,
+        'interval_seconds': interval,
+        'last_success': prior_ts,
+        'next_due': (prior_ts + interval) if (args.backup and prior_ts is not None) else None,
+        'push_pending': False,
+        'error': None,
+    }
     def worker():
         while True:
+            wait_s = seconds_until_backup_due(dest, status, interval)
+            if wait_s > 0:
+                status['next_due'] = time.time() + wait_s
+                time.sleep(wait_s)
+                continue
             try:
-                backup(args.campaign, ROOT / 'training-backup', branch, status)
-                print('Backup verified:', json.dumps(status), flush=True)
+                ran = backup(args.campaign, dest, branch, status, min_interval=interval)
+                if ran:
+                    print('Backup verified:', json.dumps(status), flush=True)
+                    time.sleep(max(1.0, seconds_until_backup_due(dest, status, interval)))
+                else:
+                    time.sleep(max(1.0, seconds_until_backup_due(dest, status, interval)))
             except Exception as exc:
                 status['error'] = str(exc)
                 print('Backup pending/failed:', str(exc), flush=True)
-            time.sleep(max(10, args.interval))
+                time.sleep(min(BACKUP_RETRY_SECONDS, interval))
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == '/':

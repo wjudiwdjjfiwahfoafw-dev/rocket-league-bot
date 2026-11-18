@@ -57,7 +57,7 @@ def main():
         if not args.curriculum_only:
             run(driver + ['--base', 'checkpoints/3043214022', '--out', str(WORK.relative_to(ROOT)),
                           '--minutes', '180', '--rounds', '40', '--target-ranking', '1700',
-                          '--monitor', '--github-backup'])
+                          '--monitor', '--github-backup', '--backup-interval', '1800'])
         backup(WORK, ROOT / 'training-backup', git('branch', '--show-current'), {})
         state = json.loads((WORK / 'state.json').read_text())
         if state['status'] != 'complete' and not args.curriculum_only:
@@ -75,15 +75,25 @@ def main():
             subprocess.run(['git', 'add', '--', relative], cwd=ROOT, check=True)
             subprocess.run(['git', 'commit', '--only', '-m', f'Preserve native PPO source {steps} for weight-only curriculum', '--', relative], cwd=ROOT, check=True)
             subprocess.run(['git', 'push', 'origin', branch], cwd=ROOT, check=True)
-        rewards = ('VelocityBallToGoal=8,Goal=600,VelocityPlayerToBall=0,NearestVelocityToBall=0,'
-                   'TeamSpacing=1,TouchAccel=5,BehindBall=0,FaceBall=0,StrongTouch=25,'
-                   'PickupBoost=2,SaveBoost=0.2,Bump=10,Demo=20')
-        out = 'results/weights1700/campaign'
+        rewards = (
+            'Air=0,FaceBall=0,VelocityPlayerToBall=0,NearestVelocityToBall=0,TeamVelocityToBall=0,'
+            'StrongTouch=0,TouchAccel=0,VelocityBallToGoal=0,BehindBall=0,TeamSpacing=0,PickupBoost=0,'
+            'Goal=600,GoalSpeed=150,ScorerAssist=100,Save=65,Shot=40,DirectionalTouch=35,'
+            'ObjectiveBallVel=7.0,KickoffSpeed=4.0,TeamPressure=1.5,DefensiveCover=0.65,DoubleCommit=1.8,'
+            'PickupBoostZS=8.0,SaveBoost=0.04,Demo=30,Bump=4'
+        )
+        out = 'results/weights1700-v2/campaign'
         run(driver + ['--base', str(source.relative_to(ROOT)), '--reference-pool', 'training-backup/pool',
-                      '--out', out, '--minutes', '120', '--pilot-minutes', '12', '--block-minutes', '18',
-                      '--rounds', '40', '--audit-seed', '9001', '--target-ranking', '1700',
-                      '--lr', '0.00008', '--random-state-prob', '0.25', '--train-vs-old', '0.35',
-                      '--rewards', rewards, '--monitor', '--github-backup'])
+                      '--out', out, '--minutes', '180', '--pilot-minutes', '12', '--block-minutes', '20',
+                      '--rounds', '40', '--audit-seed', '9007', '--target-ranking', '1700',
+                      '--epochs', '2', '--lr', '0.00011', '--critic-lr', '0.0002',
+                      '--entropy-scale', '0.0025', '--mask-entropy',
+                      '--norm-advantages', 'mode', '--target-kl', '0.02',
+                      '--return-stat-max-count', '200000',
+                      '--random-state-prob', '0', '--tactical-state-prob', '0.22', '--fuzzed-kickoffs',
+                      '--train-vs-old', '0.30', '--pfsp', '--ts-per-version', '12m', '--max-versions', '16',
+                      '--ts-per-save', '10m', '--rewards', rewards,
+                      '--monitor', '--github-backup', '--backup-interval', '1800'])
         backup(ROOT / out, ROOT / 'training-backup', git('branch', '--show-current'), {})
         final = json.loads((ROOT / out / 'state.json').read_text())
         print('1700 WEIGHT-ONLY TARGET VERIFIED' if achieved(final) else

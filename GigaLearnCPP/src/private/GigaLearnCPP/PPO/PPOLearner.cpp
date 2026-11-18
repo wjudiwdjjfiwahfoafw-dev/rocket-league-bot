@@ -471,7 +471,7 @@ void GGL::PPOLearner::AccumulateBatchGrads(const ExperienceTensors& batch, bool 
 	}
 
 	// Add up the reported values. The minibatches only exist to save time and memory, so everything is an average over the batch.
-	double batchEntropySum = 0, batchPolicyLossSum = 0;
+	double batchEntropySum = 0, batchPolicyLossSum = 0, batchKLSum = 0;
 	for (auto& mb : miniBatchStats) {
 		if (trainPolicy) {
 			stats.entropy.Add(mb.entropy * mb.count, mb.count);
@@ -484,6 +484,7 @@ void GGL::PPOLearner::AccumulateBatchGrads(const ExperienceTensors& batch, bool 
 
 			batchEntropySum += (double)mb.entropy * mb.count;
 			batchPolicyLossSum += (double)mb.policyLoss * mb.count;
+			batchKLSum += (double)mb.divergence * mb.count;
 		}
 
 		if (trainCritic)
@@ -495,6 +496,7 @@ void GGL::PPOLearner::AccumulateBatchGrads(const ExperienceTensors& batch, bool 
 		float batchEntropy = (float)(batchEntropySum / batchSize);
 		float batchPolicyLoss = (float)(batchPolicyLossSum / batchSize);
 		stats.relEntropyLoss += (batchEntropy * config.entropyScale) / batchPolicyLoss;
+		stats.lastBatchKL = (float)(batchKLSum / batchSize);
 	}
 }
 
@@ -510,13 +512,23 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 	bool trainCritic = config.criticLR != 0;
 	bool trainSharedHead = models["shared_head"] && (trainPolicy || trainCritic);
 
-	for (int epoch = 0; epoch < config.epochs; epoch++) {
+	int updatesDone = 0;
+	bool klEarlyStopped = false;
+	for (int epoch = 0; epoch < config.epochs && !klEarlyStopped; epoch++) {
 
 		// Get randomly-ordered timesteps for PPO
 		auto batches = experience.GetAllBatchesShuffled(config.batchSize, config.overbatching);
 
 		for (auto& batch : batches) {
 			AccumulateBatchGrads(batch, trainPolicy, trainCritic, stats);
+
+			if (trainPolicy && config.targetKL > 0.f && updatesDone > 0 && stats.lastBatchKL > 1.5f * config.targetKL) {
+				// Discard this batch's policy gradient step to stay inside trust region
+				for (Model* model : models)
+					model->optim->zero_grad();
+				klEarlyStopped = true;
+				break;
+			}
 
 			if (trainPolicy)
 				nn::utils::clip_grad_norm_(models["policy"]->parameters(), 0.5f);
@@ -527,8 +539,11 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 				nn::utils::clip_grad_norm_(models["shared_head"]->parameters(), 0.5f);
 
 			models.StepOptims();
+			updatesDone++;
 		}
 	}
+	if (config.targetKL > 0.f)
+		report["PPO Early Stop"] = klEarlyStopped ? 1.f : 0.f;
 
 	// Compute magnitude of updates made to the policy and value estimator
 	auto policyAfter = models["policy"]->CopyParams();

@@ -26,6 +26,7 @@
 #include <RLGymCPP/ObsBuilders/AdvancedObs.h>
 #include <RLGymCPP/ObsBuilders/MultiModeObs.h>
 #include <RLGymCPP/StateSetters/KickoffState.h>
+#include <RLGymCPP/StateSetters/FuzzedKickoffState.h>
 #include <RLGymCPP/StateSetters/RandomState.h>
 #include <RLGymCPP/StateSetters/CombinedState.h>
 #include <RLGymCPP/ActionParsers/DefaultAction.h>
@@ -155,6 +156,375 @@ public:
 	}
 };
 
+static inline bool IsUntouchedKickoffBall(const BallState& ball) {
+	return fabsf(ball.pos.x) < 1.f && fabsf(ball.pos.y) < 1.f && ball.vel.LengthSq() < 1.f;
+}
+
+// Exact conservative potential-derivative ball velocity reward toward the opponent goal mouth.
+// Projects onto the convex scoring opening [-760, 760] x {goalY} x [110, 540] (rewarding corner
+// placement and centering passes, not just dead-center hits) with smooth urgency amplification inside
+// 2800 uu of both nets. Any closed ball loop integrates to zero, preventing backboard/corner farming.
+class ObjectiveBallVelReward : public Reward {
+public:
+	static constexpr float GOAL_HALF_X   = 760.f;
+	static constexpr float GOAL_MIN_Z    = 110.f;
+	static constexpr float GOAL_MAX_Z    = 540.f;
+	static constexpr float GOAL_TARGET_Y = CommonValues::BACK_WALL_Y + CommonValues::BALL_RADIUS;
+	static constexpr float DANGER_RADIUS = 2800.f;
+	static constexpr float DANGER_BONUS  = 0.85f;
+
+	static float GoalFlow(const BallState& ball, bool orangeGoal) {
+		Vec closest(
+			std::clamp(ball.pos.x, -GOAL_HALF_X, GOAL_HALF_X),
+			orangeGoal ? GOAL_TARGET_Y : -GOAL_TARGET_Y,
+			std::clamp(ball.pos.z, GOAL_MIN_Z, GOAL_MAX_Z)
+		);
+		Vec toGoal = closest - ball.pos;
+		float dist = toGoal.Length();
+		if (dist < 1e-3f)
+			return 0.f;
+		float urgency = 1.f;
+		if (dist < DANGER_RADIUS)
+			urgency += DANGER_BONUS * (1.f - dist / DANGER_RADIUS);
+		return urgency * (toGoal * (1.f / dist)).Dot(ball.vel) * (1.f / CommonValues::BALL_MAX_SPEED);
+	}
+
+	virtual std::vector<float> GetAllRewards(const GameState& state, bool isFinal) override {
+		// Exact zero-sum across Blue and Orange; computed once per arena step.
+		float blueVal = GoalFlow(state.ball, true) - GoalFlow(state.ball, false);
+		std::vector<float> out(state.players.size());
+		for (size_t i = 0; i < state.players.size(); i++)
+			out[i] = (state.players[i].team == Team::BLUE) ? blueVal : -blueVal;
+		return out;
+	}
+
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		float blueVal = GoalFlow(state.ball, true) - GoalFlow(state.ball, false);
+		return (player.team == Team::BLUE) ? blueVal : -blueVal;
+	}
+};
+
+// Goal-directed touch impulse reward: rewards strong ball acceleration toward the opponent goal mouth
+// (on attack/midfield) or safely radially away from own goal (deep on defense), boosts productive aerial
+// touches, and penalizes hard touches driven toward own net. Used inside ZeroSumReward so winning 50/50s
+// is directly rewarded while own-zone panic hits are penalized.
+class DirectionalTouchReward : public Reward {
+public:
+	static constexpr float MIN_DELTA_VEL  = 220.f;
+	static constexpr float NORM_DELTA_VEL = RLGC::Math::KPHToVel(105);
+
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		if (!player.ballTouchedStep || !state.prev)
+			return 0.f;
+
+		Vec deltaVel = state.ball.vel - state.prev->ball.vel;
+		if (deltaVel.LengthSq() < MIN_DELTA_VEL * MIN_DELTA_VEL)
+			return 0.f;
+
+		float sign = (player.team == Team::BLUE) ? 1.f : -1.f;
+		float goalLineY = CommonValues::BACK_WALL_Y + CommonValues::BALL_RADIUS;
+		Vec oppGoal(
+			std::clamp(state.ball.pos.x, -760.f, 760.f),
+			sign * goalLineY,
+			std::clamp(state.ball.pos.z, 110.f, 540.f)
+		);
+		Vec ownGoal(
+			std::clamp(state.ball.pos.x, -850.f, 850.f),
+			-sign * goalLineY,
+			std::clamp(state.ball.pos.z, 93.f, 600.f)
+		);
+
+		Vec toOpp = oppGoal - state.ball.pos;
+		float dOpp = toOpp.Length();
+		Vec dirAttack = (dOpp > 1e-3f) ? (toOpp * (1.f / dOpp)) : Vec(0.f, sign, 0.f);
+
+		Vec fromOwn = state.ball.pos - ownGoal;
+		float dOwn = fromOwn.Length();
+		Vec dirClear = (dOwn > 1e-3f) ? (fromOwn * (1.f / dOwn)) : Vec(0.f, sign, 0.f);
+
+		// Near own goal, blend in radial escape so safe corner/upfield clears are rewarded and
+		// centering the ball across own goal crease is discouraged.
+		float clearBlend = std::clamp(1.f - dOwn / 2600.f, 0.f, 0.7f);
+		float directed = (1.f - clearBlend) * deltaVel.Dot(dirAttack) + clearBlend * deltaVel.Dot(dirClear);
+		float score = std::clamp(directed / NORM_DELTA_VEL, -0.5f, 1.15f);
+
+		if (score > 0.f && state.ball.pos.z > 260.f) {
+			float airBonus = 1.f + 0.45f * std::clamp((state.ball.pos.z - 260.f) / 740.f, 0.f, 1.f);
+			score *= airBonus;
+		}
+		return score;
+	}
+};
+
+// Zero-sum bonus on goals proportional to scoring shot speed (fast shots beat defenders reliably).
+class GoalSpeedReward : public Reward {
+public:
+	static constexpr float REF_SPEED = RLGC::Math::KPHToVel(120);
+
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		if (!state.goalScored)
+			return 0.f;
+		float frac = std::clamp(state.ball.vel.Length() / REF_SPEED, 0.f, 1.2f);
+		bool scored = (player.team != RS_TEAM_FROM_Y(state.ball.pos.y));
+		return scored ? frac : -frac;
+	}
+};
+
+// Direct finishing & playmaking credit on goals (scorer +1.0, passing assist +0.75).
+class ScorerAssistReward : public Reward {
+public:
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		if (player.eventState.goal)
+			return 1.f;
+		if (player.eventState.assist)
+			return 0.75f;
+		return 0.f;
+	}
+};
+
+// Credits ballistic on-target shots and setup passes tracked by RocketSim's GameEventTracker (1s cooldown).
+class ShotAndPassReward : public Reward {
+public:
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		if (player.eventState.shot)
+			return 1.f;
+		if (player.eventState.shotPass)
+			return 0.6f;
+		return 0.f;
+	}
+};
+
+// Credits defensive saves: both official event saves and close-range/medium-speed trajectory denials,
+// guarded by a per-team cooldown so touches near own net cannot be farmed.
+class ClutchSaveReward : public Reward {
+	float cooldown[2] = { 0.f, 0.f };
+public:
+	static constexpr float SAVE_COOLDOWN = 1.2f;
+
+	virtual void Reset(const GameState& initialState) override {
+		cooldown[0] = cooldown[1] = 0.f;
+	}
+
+	virtual void PreStep(const GameState& state) override {
+		for (int t = 0; t < 2; t++)
+			cooldown[t] = std::max(0.f, cooldown[t] - state.deltaTime);
+	}
+
+	static bool BallHeadingIntoGoal(const BallState& b, Team goalTeam) {
+		float sign = (goalTeam == Team::ORANGE) ? 1.f : -1.f;
+		float vyToward = b.vel.y * sign;
+		if (vyToward < 750.f)
+			return false;
+		float distY = (sign * CommonValues::BACK_WALL_Y - b.pos.y) * sign;
+		if (distY <= 0.f || distY > 3600.f)
+			return false;
+		float t = distY / vyToward;
+		if (t > 2.1f)
+			return false;
+		float xAt = b.pos.x + b.vel.x * t;
+		float zAt = b.pos.z + b.vel.z * t + 0.5f * CommonValues::GRAVITY_Z * t * t;
+		return fabsf(xAt) <= (CommonValues::GOAL_WIDTH_FROM_CENTER + 15.f) &&
+		       zAt <= (CommonValues::GOAL_HEIGHT + 15.f);
+	}
+
+	virtual std::vector<float> GetAllRewards(const GameState& state, bool isFinal) override {
+		std::vector<float> out(state.players.size(), 0.f);
+		if (state.goalScored)
+			return out;
+		for (size_t i = 0; i < state.players.size(); i++) {
+			const auto& p = state.players[i];
+			int t = (int)p.team;
+			if (cooldown[t] > 0.f)
+				continue;
+			float val = 0.f;
+			if (p.eventState.save) {
+				val = 1.f;
+			} else if (p.ballTouchedStep && state.prev &&
+			           BallHeadingIntoGoal(state.prev->ball, p.team) &&
+			           !BallHeadingIntoGoal(state.ball, p.team)) {
+				val = std::clamp(fabsf(state.prev->ball.vel.y) / 1800.f, 0.5f, 1.f);
+			}
+			if (val > 0.f) {
+				out[i] = val;
+				cooldown[t] = SAVE_COOLDOWN;
+			}
+		}
+		return out;
+	}
+
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		return player.eventState.save ? 1.f : 0.f;
+	}
+};
+
+// Smooth, exact zero-sum kickoff closing-speed reward. Evaluates each team's closest car(s) while
+// the kickoff ball lies untouched on the center spot, giving equal strength in 1v1, 2v2 and 3v3
+// while leaving back-spawned teammates free to guard net, cheat up or collect boost.
+class KickoffSpeedReward : public Reward {
+public:
+	virtual std::vector<float> GetAllRewards(const GameState& state, bool isFinal) override {
+		std::vector<float> out(state.players.size(), 0.f);
+		if (!IsUntouchedKickoffBall(state.ball))
+			return out;
+
+		float minDist[2] = { 1e9f, 1e9f };
+		for (const auto& p : state.players) {
+			if (p.isDemoed)
+				continue;
+			float d = (state.ball.pos - p.pos).Length();
+			int t = (int)p.team;
+			if (d < minDist[t])
+				minDist[t] = d;
+		}
+
+		float bestClosing[2] = { -1.f, -1.f };
+		bool hasCar[2] = { false, false };
+		for (const auto& p : state.players) {
+			if (p.isDemoed)
+				continue;
+			int t = (int)p.team;
+			Vec toBall = state.ball.pos - p.pos;
+			float d = toBall.Length();
+			if (d > minDist[t] + 150.f || d < 1e-3f)
+				continue;
+			float c = (toBall * (1.f / d)).Dot(p.vel) * (1.f / CommonValues::CAR_MAX_SPEED);
+			if (!hasCar[t] || c > bestClosing[t]) {
+				bestClosing[t] = c;
+				hasCar[t] = true;
+			}
+		}
+		if (!hasCar[0] || !hasCar[1])
+			return out;
+
+		float blueAdv = bestClosing[0] - bestClosing[1];
+		for (size_t i = 0; i < state.players.size(); i++)
+			out[i] = (state.players[i].team == Team::BLUE) ? blueAdv : -blueAdv;
+		return out;
+	}
+
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		return GetAllRewards(state, isFinal)[player.index];
+	}
+};
+
+// Exact zero-sum first-man challenge pressure: compares non-negative closing speed of each team's
+// nearest alive player toward the ball during live play. Cures passive 2v2/3v3 play and wins loose
+// balls without penalizing shadow defense (clamped >= 0) or pulling 2nd/3rd man out of rotation.
+class TeamPressureReward : public Reward {
+public:
+	virtual std::vector<float> GetAllRewards(const GameState& state, bool isFinal) override {
+		std::vector<float> out(state.players.size(), 0.f);
+		if (IsUntouchedKickoffBall(state.ball))
+			return out;
+
+		float bestDistSq[2] = { 1e18f, 1e18f };
+		float press[2] = { 0.f, 0.f };
+		for (const auto& p : state.players) {
+			if (p.isDemoed)
+				continue;
+			int t = (int)p.team;
+			Vec toBall = state.ball.pos - p.pos;
+			float dSq = toBall.LengthSq();
+			if (dSq < bestDistSq[t] && dSq > 1.f) {
+				bestDistSq[t] = dSq;
+				float closing = (toBall * (1.f / sqrtf(dSq))).Dot(p.vel) * (1.f / CommonValues::CAR_MAX_SPEED);
+				press[t] = std::max(0.f, closing);
+			}
+		}
+
+		float blueAdv = press[0] - press[1];
+		for (size_t i = 0; i < state.players.size(); i++)
+			out[i] = (state.players[i].team == Team::BLUE) ? blueAdv : -blueAdv;
+		return out;
+	}
+
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		return GetAllRewards(state, isFinal)[player.index];
+	}
+};
+
+// Exact zero-sum 2v2/3v3 last-man rotation reward. Checks whether each team keeps at least one alive
+// defender closer (in 2D Euclidean distance) to own goal than the ball is, scaled by threat level.
+// Leaves 1st/2nd man free to attack, pass and challenge while eliminating full-team overcommits.
+// Returns 0 in 1v1.
+class DefensiveCoverReward : public Reward {
+public:
+	virtual std::vector<float> GetAllRewards(const GameState& state, bool isFinal) override {
+		std::vector<float> out(state.players.size(), 0.f);
+		if (state.players.size() <= 2)
+			return out;
+
+		float cover[2] = { 0.f, 0.f };
+		Vec ball2D(state.ball.pos.x, state.ball.pos.y, 0.f);
+		for (int t = 0; t < 2; t++) {
+			float sign = (t == 0) ? 1.f : -1.f;
+			float ballY = state.ball.pos.y * sign;
+			float ballVY = state.ball.vel.y * sign;
+			float posThreat = std::clamp((1500.f - ballY) / 5500.f, 0.15f, 1.f);
+			float velThreat = std::clamp(-ballVY / 3500.f, 0.f, 0.5f);
+			float threat = std::min(1.f, posThreat + velThreat);
+
+			Vec ownGoal(0.f, -sign * CommonValues::BACK_WALL_Y, 0.f);
+			float ballDistGoal = (ball2D - ownGoal).Length();
+
+			float bestMargin = -1.f;
+			bool anyAlive = false;
+			for (const auto& p : state.players) {
+				if ((int)p.team != t || p.isDemoed)
+					continue;
+				anyAlive = true;
+				float carDistGoal = (Vec(p.pos.x, p.pos.y, 0.f) - ownGoal).Length();
+				float s = std::clamp((ballDistGoal - carDistGoal) / 1200.f, -1.f, 0.6f);
+				if (s > bestMargin)
+					bestMargin = s;
+			}
+			cover[t] = (anyAlive ? bestMargin : -0.5f) * threat;
+		}
+
+		float blueAdv = cover[0] - cover[1];
+		for (size_t i = 0; i < state.players.size(); i++)
+			out[i] = (state.players[i].team == Team::BLUE) ? blueAdv : -blueAdv;
+		return out;
+	}
+
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		return GetAllRewards(state, isFinal)[player.index];
+	}
+};
+
+// Penalizes crowding teammates and double-committing on the ball in 2v2/3v3 (stronger on the later/farther
+// committer so the 2nd man rotates off cleanly), while relaxing inside own goal crease for saves. Zero in 1v1.
+class DoubleCommitReward : public Reward {
+public:
+	static constexpr float SPACE_DIST       = 1350.f;
+	static constexpr float BALL_COMMIT_DIST = 1450.f;
+
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		if (player.isDemoed || state.players.size() <= 2)
+			return 0.f;
+
+		float ownBallDist = (state.ball.pos - player.pos).Length();
+		float sign = (player.team == Team::BLUE) ? 1.f : -1.f;
+		bool inOwnCrease = (player.pos.y * sign < -4300.f && fabsf(player.pos.x) < 1200.f);
+
+		float penalty = 0.f;
+		for (const auto& other : state.players) {
+			if (other.team != player.team || other.carId == player.carId || other.isDemoed)
+				continue;
+			float d = (other.pos - player.pos).Length();
+			if (d >= SPACE_DIST)
+				continue;
+			float close = 1.f - d / SPACE_DIST;
+			float otherBallDist = (state.ball.pos - other.pos).Length();
+			float mult = 0.5f;
+			if (!inOwnCrease && ownBallDist < BALL_COMMIT_DIST && otherBallDist < BALL_COMMIT_DIST)
+				mult = (ownBallDist > otherBallDist) ? 1.6f : 0.9f;
+			penalty = std::min(penalty, -close * mult);
+		}
+		return penalty;
+	}
+};
+
 // The rewards of the training. --rewards changes the weights, a weight of 0 turns a reward off.
 struct RewardDef {
 	const char* name;
@@ -197,6 +567,19 @@ static const std::vector<RewardDef> REWARD_DEFS = {
 	{ "KickoffProximity", 0, []() -> Reward* { return new KickoffProximityReward(); }, "kickoffs: the team's nearest player being closer to the ball than the opponents' while it still lies on the centre spot (zero-sum)" },
 	{ "NearestVelocityToBall", 0, []() -> Reward* { return new NearestVelocityToBallReward(); }, "speed towards the ball, only for the player of each team that is nearest to the ball (in 1v1 the same as VelocityPlayerToBall)" },
 	{ "TeamVelocityToBall", 0, []() -> Reward* { return new TeamVelocityToBallReward(); }, "speed towards the ball of the team's nearest player to the ball, for every player of the team (in 1v1 the same as VelocityPlayerToBall)" },
+
+	// Competitive zero-sum multi-mode rewards (disabled by default unless selected in --rewards)
+	{ "ObjectiveBallVel", 0, []() -> Reward* { return new ObjectiveBallVelReward(); }, "exact potential-derivative ball velocity toward goal mouth with box urgency (zero-sum)" },
+	{ "DirectionalTouch", 0, []() -> Reward* { return new ZeroSumReward(new DirectionalTouchReward(), 0.35f); }, "goal-directed power touches, aerial hits, 50/50 wins and safe defensive clears (zero-sum)" },
+	{ "GoalSpeed", 0, []() -> Reward* { return new GoalSpeedReward(); }, "bonus scaled by shot speed when a goal is scored (zero-sum)" },
+	{ "ScorerAssist", 0, []() -> Reward* { return new ZeroSumReward(new ScorerAssistReward(), 0.f); }, "direct scorer and passing assist credit on goals (zero-sum)" },
+	{ "Shot", 0, []() -> Reward* { return new ZeroSumReward(new ShotAndPassReward(), 0.25f); }, "verified high-speed shots on target and shot-passes (zero-sum)" },
+	{ "Save", 0, []() -> Reward* { return new ZeroSumReward(new ClutchSaveReward(), 0.25f); }, "verified saves and goal-bound shot blocks with cooldown (zero-sum)" },
+	{ "KickoffSpeed", 0, []() -> Reward* { return new KickoffSpeedReward(); }, "smooth closing speed of each team's closest car on untouched kickoffs (zero-sum)" },
+	{ "TeamPressure", 0, []() -> Reward* { return new TeamPressureReward(); }, "non-negative closing speed of each team's first-man challenger (zero-sum)" },
+	{ "DefensiveCover", 0, []() -> Reward* { return new DefensiveCoverReward(); }, "last-man 2D goal-side rotation cover in 2v2/3v3 (zero-sum, 0 in 1v1)" },
+	{ "DoubleCommit", 0, []() -> Reward* { return new ZeroSumReward(new DoubleCommitReward(), 0.3f); }, "penalizes teammate crowding and ball double-commits in 2v2/3v3 (zero-sum, 0 in 1v1)" },
+	{ "PickupBoostZS", 0, []() -> Reward* { return new ZeroSumReward(new PickupBoostReward(), 0.2f); }, "collecting boost pads and starving opponents (zero-sum)" },
 };
 
 // Weights that differ from the defaults (--rewards)
@@ -261,6 +644,178 @@ static float g_RandomStateProb = 0;
 // Random states: top speed of the ball (uu/s), and how the cars start (set with --random-ball-speed, --random-car-speed, --random-cars-in-air)
 static float g_RandomBallSpeed = 2000;
 static bool g_RandomCarSpeed = false, g_RandomCarsInAir = false;
+static float g_TacticalStateProb = 0;
+static bool g_FuzzedKickoffs = false;
+
+// Clamps a 2D point comfortably inside Soccar arena side/back walls and 45-degree corner chamfers.
+static Vec ClampArenaXY(float x, float y, float z = 17.f) {
+	x = std::clamp(x, -3450.f, 3450.f);
+	y = std::clamp(y, -4550.f, 4550.f);
+	constexpr float CORNER_SUM = 7150.f; // Real corner wall satisfies |x| + |y| ~= 8064
+	float s = fabsf(x) + fabsf(y);
+	if (s > CORNER_SUM) {
+		float scale = CORNER_SUM / s;
+		x *= scale;
+		y *= scale;
+	}
+	return Vec(x, y, z);
+}
+
+// Symmetric game-realistic tactical state setter: practices clutch saves & shot-finishing,
+// corner/backboard clears & centering passes, high-speed open-field counterattacks, and contested
+// midfield ground/aerial 50/50s — always with aligned forward car velocities, realistic boost,
+// and exact 50/50 symmetry between Blue and Orange.
+class TacticalStateSetter : public StateSetter {
+	static CarState MakeGroundCar(Vec pos, float yaw, float forwardSpeed, float boost) {
+		CarState cs = {};
+		cs.pos = ClampArenaXY(pos.x, pos.y, 17.f);
+		cs.isOnGround = true;
+		Angle ang(yaw, 0.f, 0.f);
+		cs.rotMat = ang.ToRotMat();
+		cs.vel = cs.rotMat.forward * forwardSpeed;
+		cs.isSupersonic = (forwardSpeed >= CommonValues::SUPERSONIC_THRESHOLD);
+		cs.boost = std::clamp(boost, 0.f, 100.f);
+		return cs;
+	}
+
+	static float YawToward(const Vec& from, const Vec& to, float jitter = 0.35f) {
+		float base = atan2f(to.y - from.y, to.x - from.x);
+		return base + RocketSim::Math::RandFloat(-jitter, jitter);
+	}
+
+public:
+	virtual void ResetArena(Arena* arena) override {
+		using RocketSim::Math::RandFloat;
+		using RocketSim::Math::RandInt;
+
+		arena->ResetToRandomKickoff();
+
+		// Randomly pick which side starts under pressure (exact 50/50 Blue/Orange symmetry)
+		float attackSign = (RandInt(0, 2) == 0) ? 1.f : -1.f; // +1: Blue attacks +Y, -1: Orange attacks -Y
+		float mirrorSign = (RandInt(0, 2) == 0) ? 1.f : -1.f; // exact 50/50 left/right symmetry
+		int scenario = RandInt(0, 4);
+
+		BallState bs = {};
+		std::vector<Car*> attackers, defenders;
+		for (Car* car : arena->_cars) {
+			bool isAtt = ((car->team == Team::BLUE) == (attackSign > 0.f));
+			(isAtt ? attackers : defenders).push_back(car);
+		}
+
+		// Ensure no two cars overlap when placed
+		std::vector<Vec> placed;
+		auto placeSafe = [&](Vec p) -> Vec {
+			p = ClampArenaXY(p.x, p.y, 17.f);
+			for (int attempt = 0; attempt < 8; attempt++) {
+				bool ok = (p.DistSq2D(bs.pos) > 260.f * 260.f);
+				for (const Vec& q : placed)
+					if (p.DistSq2D(q) < 320.f * 320.f)
+						ok = false;
+				if (ok)
+					break;
+				p = ClampArenaXY(p.x + RandFloat(-500.f, 500.f), p.y + RandFloat(-500.f, 500.f), 17.f);
+			}
+			placed.push_back(p);
+			return p;
+		};
+
+		if (scenario == 0) {
+			// Scenario 0: Shot on target / clutch goal-line & shadow save drill
+			float bx = mirrorSign * RandFloat(-200.f, 2200.f);
+			float by = attackSign * RandFloat(1200.f, 3400.f);
+			float bz = RandFloat(95.f, 520.f);
+			bs.pos = ClampArenaXY(bx, by, bz);
+
+			Vec goalTarget(RandFloat(-780.f, 780.f), attackSign * 5200.f, RandFloat(110.f, 560.f));
+			Vec toGoal = goalTarget - bs.pos;
+			float speed = RandFloat(1250.f, 2850.f);
+			float flightT = std::max(0.35f, toGoal.Length() / speed);
+			bs.vel = toGoal.Normalized() * speed;
+			// Compensate partial gravity so aerial shots actually reach the goal frame
+			bs.vel.z = std::clamp((goalTarget.z - bs.pos.z - 0.5f * CommonValues::GRAVITY_Z * flightT * flightT) / flightT, -600.f, 1100.f);
+			bs.angVel = RLGC::Math::RandVec(Vec(-3, -3, -3), Vec(3, 3, 3));
+
+			for (size_t i = 0; i < defenders.size(); i++) {
+				Vec pos = (i == 0)
+					? Vec(-mirrorSign * RandFloat(100.f, 1100.f), attackSign * RandFloat(3900.f, 4520.f), 17.f)
+					: Vec(RandFloat(-2600.f, 2600.f), attackSign * RandFloat(1800.f, 4200.f), 17.f);
+				pos = placeSafe(pos);
+				Vec aim(RandFloat(-400.f, 400.f), attackSign * 4900.f, 17.f);
+				float yaw = YawToward(pos, (i == 0) ? bs.pos : aim, 0.45f);
+				defenders[i]->SetState(MakeGroundCar(pos, yaw, RandFloat(400.f, 1650.f), RandFloat(15.f, 80.f)));
+			}
+			for (size_t i = 0; i < attackers.size(); i++) {
+				Vec pos = (i == 0)
+					? Vec(bs.pos.x + RandFloat(-700.f, 700.f), bs.pos.y - attackSign * RandFloat(450.f, 1300.f), 17.f)
+					: Vec(RandFloat(-2800.f, 2800.f), attackSign * RandFloat(-800.f, 2400.f), 17.f);
+				pos = placeSafe(pos);
+				float yaw = YawToward(pos, bs.pos, 0.4f);
+				attackers[i]->SetState(MakeGroundCar(pos, yaw, RandFloat(600.f, 1850.f), RandFloat(10.f, 75.f)));
+			}
+		} else if (scenario == 1) {
+			// Scenario 1: Corner / backboard centering pass vs back-post clear
+			float bx = mirrorSign * RandFloat(1400.f, 3300.f);
+			float by = attackSign * RandFloat(3100.f, 4450.f);
+			float bz = RandFloat(95.f, 780.f);
+			bs.pos = ClampArenaXY(bx, by, bz);
+
+			Vec boxTarget(mirrorSign * RandFloat(-600.f, 700.f), attackSign * RandFloat(3800.f, 4850.f), RandFloat(120.f, 550.f));
+			bs.vel = (boxTarget - bs.pos).Normalized() * RandFloat(900.f, 2300.f);
+			bs.angVel = RLGC::Math::RandVec(Vec(-4, -4, -4), Vec(4, 4, 4));
+
+			for (size_t i = 0; i < defenders.size(); i++) {
+				Vec pos = (i == 0)
+					? Vec(-mirrorSign * RandFloat(-200.f, 950.f), attackSign * RandFloat(4100.f, 4520.f), 17.f)
+					: Vec(mirrorSign * RandFloat(-1800.f, 2200.f), attackSign * RandFloat(2500.f, 4300.f), 17.f);
+				pos = placeSafe(pos);
+				defenders[i]->SetState(MakeGroundCar(pos, YawToward(pos, bs.pos, 0.5f), RandFloat(300.f, 1500.f), RandFloat(12.f, 85.f)));
+			}
+			for (size_t i = 0; i < attackers.size(); i++) {
+				Vec pos = (i == 0)
+					? Vec(RandFloat(-1500.f, 1500.f), attackSign * RandFloat(1800.f, 3500.f), 17.f)
+					: Vec(RandFloat(-2800.f, 2800.f), attackSign * RandFloat(-500.f, 2600.f), 17.f);
+				pos = placeSafe(pos);
+				attackers[i]->SetState(MakeGroundCar(pos, YawToward(pos, boxTarget, 0.45f), RandFloat(500.f, 1750.f), RandFloat(15.f, 85.f)));
+			}
+		} else if (scenario == 2) {
+			// Scenario 2: Fast counterattack / open-field transition with moving cars
+			bs.pos = ClampArenaXY(RandFloat(-2600.f, 2600.f), attackSign * RandFloat(-1500.f, 2000.f), RandFloat(95.f, 460.f));
+			Vec upfield(RandFloat(-1800.f, 1800.f), attackSign * 5000.f, RandFloat(100.f, 450.f));
+			bs.vel = (upfield - bs.pos).Normalized() * RandFloat(700.f, 2300.f);
+			bs.angVel = RLGC::Math::RandVec(Vec(-4, -4, -4), Vec(4, 4, 4));
+
+			for (size_t i = 0; i < attackers.size(); i++) {
+				float yOff = (i == 0) ? RandFloat(450.f, 1500.f) : RandFloat(1200.f, 3200.f);
+				Vec pos = placeSafe(Vec(bs.pos.x + RandFloat(-1400.f, 1400.f), bs.pos.y - attackSign * yOff, 17.f));
+				attackers[i]->SetState(MakeGroundCar(pos, YawToward(pos, bs.pos, 0.35f), RandFloat(800.f, 2100.f), RandFloat(20.f, 95.f)));
+			}
+			for (size_t i = 0; i < defenders.size(); i++) {
+				Vec pos = placeSafe(Vec(RandFloat(-2800.f, 2800.f), bs.pos.y + attackSign * RandFloat(-400.f, 2600.f), 17.f));
+				Vec ownNet(0.f, attackSign * 5000.f, 17.f);
+				defenders[i]->SetState(MakeGroundCar(pos, YawToward(pos, (i == 0) ? bs.pos : ownNet, 0.5f), RandFloat(700.f, 2050.f), RandFloat(10.f, 80.f)));
+			}
+		} else {
+			// Scenario 3: Contested midfield 50/50 & bouncing aerial ball
+			bs.pos = ClampArenaXY(RandFloat(-2900.f, 2900.f), RandFloat(-2200.f, 2200.f), RandFloat(95.f, 920.f));
+			bs.vel = Vec(RandFloat(-1600.f, 1600.f), RandFloat(-1600.f, 1600.f), RandFloat(-300.f, 750.f));
+			if (bs.vel.LengthSq() < 200.f * 200.f)
+				bs.vel.y = attackSign * 500.f;
+			bs.angVel = RLGC::Math::RandVec(Vec(-4, -4, -4), Vec(4, 4, 4));
+
+			auto placeTeam = [&](std::vector<Car*>& cars, float teamHomeSign) {
+				for (size_t i = 0; i < cars.size(); i++) {
+					float backDist = (i == 0) ? RandFloat(650.f, 1700.f) : RandFloat(1500.f, 3400.f);
+					Vec pos = placeSafe(Vec(bs.pos.x + RandFloat(-1600.f, 1600.f), bs.pos.y + teamHomeSign * backDist, 17.f));
+					cars[i]->SetState(MakeGroundCar(pos, YawToward(pos, bs.pos, 0.45f), RandFloat(500.f, 1950.f), RandFloat(15.f, 90.f)));
+				}
+			};
+			placeTeam(attackers, -attackSign);
+			placeTeam(defenders, attackSign);
+		}
+
+		arena->ball->SetState(bs);
+	}
+};
 
 // RLGym's RandomState (random positions for the ball and the cars), with the top speed of the ball as a setting.
 // NOTE: The ball needs some speed. RocketSim leaves a ball that is exactly at rest alone until something touches it
@@ -462,17 +1017,21 @@ EnvCreateResult EnvCreateFunc(int index) {
 	result.actionParser = MakeActionParser();
 	result.obsBuilder = MakeObsBuilder();
 
-	if (g_RandomStateProb <= 0) {
-		result.stateSetter = new KickoffState();
+	auto fnMakeKickoff = []() -> StateSetter* {
+		return g_FuzzedKickoffs ? (StateSetter*)new FuzzedKickoffState() : (StateSetter*)new KickoffState();
+	};
+	float kickProb = std::max(0.f, 1.f - g_RandomStateProb - g_TacticalStateProb);
+	if (g_RandomStateProb <= 0.f && g_TacticalStateProb <= 0.f) {
+		result.stateSetter = fnMakeKickoff();
 	} else {
-		// Mix kickoffs with random states (ball and cars at random positions, the ball moving).
-		// Random states show the bot far more situations than kickoffs do: balls that bounce, roll and come from all directions.
-		result.stateSetter = new CombinedState(
-			{
-				{ new KickoffState(), 1 - g_RandomStateProb },
-				{ new RandomStateWithBallSpeed(g_RandomBallSpeed, g_RandomCarSpeed, !g_RandomCarsInAir), g_RandomStateProb }
-			}
-		);
+		std::vector<std::pair<StateSetter*, float>> setters = {};
+		if (kickProb > 0.f)
+			setters.push_back({ fnMakeKickoff(), kickProb });
+		if (g_RandomStateProb > 0.f)
+			setters.push_back({ new RandomStateWithBallSpeed(g_RandomBallSpeed, g_RandomCarSpeed, !g_RandomCarsInAir), g_RandomStateProb });
+		if (g_TacticalStateProb > 0.f)
+			setters.push_back({ new TacticalStateSetter(), g_TacticalStateProb });
+		result.stateSetter = new CombinedState(setters);
 	}
 
 	result.terminalConditions = terminalConditions;
@@ -534,9 +1093,18 @@ static const OptionDef OPTION_DEFS[] = {
 	{ "threads", "0", "CPU threads used for learning on the CPU, 0 = automatic" },
 	{ "epochs", "1", "PPO epochs per iteration" },
 	{ "lr", "1.5e-4", "Learning rate of the policy and the critic" },
+	{ "critic-lr", "0", "Separate critic learning rate, 0 = same as --lr" },
 	{ "entropy-scale", "0.035", "Scale of the (normalized) entropy bonus" },
+	{ "mask-entropy", NULL, "Normalize policy entropy over the valid actions of each state" },
+	{ "norm-advantages", "off", "Normalize PPO policy advantages: off, all or mode (per 1v1/2v2/3v3)" },
+	{ "target-kl", "0", "Stop remaining PPO batches in an iteration if batch KL exceeds 1.5x this threshold (0 = off)" },
 	{ "gamma", "0.99", "Reward discount" },
+	{ "gae-lambda", "0.95", "GAE lambda" },
+	{ "return-stat-max-count", "0", "Cap effective sample count of return standardizer so reward changes adapt smoothly (0 = off)" },
 	{ "random-state-prob", "0", "Portion of episodes (0-1) starting from a random state instead of a kickoff" },
+	{ "tactical-state-prob", "0", "Portion of episodes (0-1) starting from symmetric tactical save/shot/pass/transition states" },
+	{ "fuzzed-kickoffs", NULL, "Apply tiny position fuzz on training kickoffs (matches anchored evaluation kickoffs)" },
+	{ "pfsp", NULL, "Use Prioritized Fictitious Self-Play weighting when sampling saved policy opponents" },
 	{ "random-ball-speed", "2000", "Random states: the ball starts with a random speed of up to this (uu/s, at most 6000). With 0 it hangs in the air until a car touches it" },
 	{ "random-car-speed", NULL, "Random states: the cars start with a random speed and spin, instead of at rest" },
 	{ "random-cars-in-air", NULL, "Random states: half of the cars start in the air with a random orientation, instead of all on the ground" },
@@ -1224,6 +1792,10 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 
 	// The environment
 	g_RandomStateProb = RS_CLAMP((float)opt.Num("random-state-prob"), 0.f, 1.f);
+	g_TacticalStateProb = RS_CLAMP((float)opt.Num("tactical-state-prob"), 0.f, 1.f);
+	if (g_RandomStateProb + g_TacticalStateProb > 1.f)
+		RG_ERR_CLOSE("--random-state-prob + --tactical-state-prob cannot exceed 1");
+	g_FuzzedKickoffs = opt.Has("fuzzed-kickoffs");
 	g_RandomBallSpeed = RS_CLAMP((float)opt.Num("random-ball-speed"), 0.f, 6000.f);
 	g_RandomCarSpeed = opt.Has("random-car-speed");
 	g_RandomCarsInAir = opt.Has("random-cars-in-air");
@@ -1278,14 +1850,32 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 	// This scales differently than "ent_coef" in other frameworks
 	// This is the scale for normalized entropy, which means you won't have to change it if you add more actions
 	cfg.ppo.entropyScale = (float)opt.Num("entropy-scale");
+	cfg.ppo.maskEntropy = opt.Has("mask-entropy");
+
+	{
+		std::string normAdv = opt.Str("norm-advantages");
+		if (normAdv == "off") {
+			cfg.ppo.normalizeAdvantages = AdvantageNormMode::OFF;
+		} else if (normAdv == "all") {
+			cfg.ppo.normalizeAdvantages = AdvantageNormMode::ALL;
+		} else if (normAdv == "mode") {
+			cfg.ppo.normalizeAdvantages = AdvantageNormMode::PER_MODE;
+		} else {
+			RG_ERR_CLOSE("Option --norm-advantages: expected off, all or mode, got \"" << normAdv << "\"");
+		}
+	}
+	cfg.ppo.targetKL = RS_MAX((float)opt.Num("target-kl"), 0.f);
 
 	// Rate of reward decay
 	// Starting low tends to work out
 	cfg.ppo.gaeGamma = (float)opt.Num("gamma");
+	cfg.ppo.gaeLambda = RS_CLAMP((float)opt.Num("gae-lambda"), 0.f, 1.f);
+	cfg.maxReturnStatCount = RS_MAX(opt.Int("return-stat-max-count"), (int64_t)0);
 
 	// Good learning rate to start
 	cfg.ppo.policyLR = (float)opt.Num("lr");
-	cfg.ppo.criticLR = (float)opt.Num("lr");
+	float criticLR = (float)opt.Num("critic-lr");
+	cfg.ppo.criticLR = (criticLR > 0.f) ? criticLR : cfg.ppo.policyLR;
 
 	SetModelConfig(cfg.ppo);
 
@@ -1323,6 +1913,7 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 	cfg.maxOldVersions = (int)RS_MAX(opt.Int("max-versions"), (int64_t)1);
 	cfg.trainAgainstOldChance = RS_CLAMP((float)opt.Num("train-vs-old"), 0.f, 1.f);
 	cfg.trainAgainstOldVersions = cfg.trainAgainstOldChance > 0;
+	cfg.pfspOpponents = opt.Has("pfsp");
 
 	cfg.mirrorX = ResolveMirrorX(opt, "mirror", FindNewestCheckpoint(opt.Str("checkpoints")));
 	cfg.mirrorXFromCheckpoint = false; // Already looked up, and the option can change it
@@ -1371,9 +1962,17 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 		j["batch_size"] = cfg.ppo.batchSize;
 		j["epochs"] = cfg.ppo.epochs;
 		j["lr"] = cfg.ppo.policyLR;
+		j["critic_lr"] = cfg.ppo.criticLR;
 		j["entropy_scale"] = cfg.ppo.entropyScale;
+		j["mask_entropy"] = cfg.ppo.maskEntropy;
+		j["norm_advantages"] = opt.Str("norm-advantages");
+		j["target_kl"] = cfg.ppo.targetKL;
 		j["gamma"] = cfg.ppo.gaeGamma;
+		j["gae_lambda"] = cfg.ppo.gaeLambda;
 		j["random_state_prob"] = g_RandomStateProb;
+		j["tactical_state_prob"] = g_TacticalStateProb;
+		j["fuzzed_kickoffs"] = g_FuzzedKickoffs;
+		j["pfsp"] = cfg.pfspOpponents;
 		if (g_RandomStateProb > 0) {
 			j["random_ball_speed"] = g_RandomBallSpeed;
 			j["random_car_speed"] = g_RandomCarSpeed;
