@@ -57,3 +57,28 @@ The next experiment now starts immediately from selected native PPO `3137998278`
 using `tools/pursue_weight_target.py --curriculum-only`; the reward/curriculum
 settings above were specified before seeing this screen. This change in scheduling
 is adaptive, not a predeclared stop rule. No held-out audit informed it.
+
+## Fresh-build curriculum results (2026-11-18, ongoing)
+
+The rebuilt binary's matching-seed baseline must be used for this trial, rather
+than subtracting older-build scores. All entries below use sampled temperature 1
+and the unchanged five-opponent pool. Mode columns are the screen results.
+
+| Checkpoint | Trainer minutes in block | 1v1 | 2v2 | 3v3 | Screen | Confirmation | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 3137998278 | 0 | 1471.23 | 1654.67 | 1601.87 | 1575.92 | 1573.95 | Fresh baseline |
+| 3152126406 | 12.3 | 1503.66 | 1628.42 | 1557.47 | 1563.19 | — | Rejected |
+| 3174237894 | 18.1 | 1478.55 | 1671.86 | 1580.17 | 1576.86 | 1592.27 | Promoted |
+
+The promoted checkpoint gains only +0.94 on screen and +18.32 on confirmation
+(+9.63 mean matching-seed gain). This passes the existing selection rule but is
+modest evidence, not a robust claim of a large improvement. Confirmation modes:
+1490.80 / 1688.14 / 1597.87. No held-out audit has been used for these decisions.
+Stage 3 is running; **1700 remains unachieved**.
+
+The canonical GitHub snapshot has successfully switched to
+`results/weights1700/campaign`, including saved optimizer state, selected weights,
+and campaign recovery metadata. Added a regression test that restore-only uses
+this recorded working directory and never starts a trainer; all 13 Python tests
+pass. Inspect live campaign state for subsequent blocks rather than treating this
+in-progress table as a final result.
