@@ -44,7 +44,11 @@ def main():
     parser.add_argument('--restore-only', action='store_true')
     parser.add_argument('--without-monitor', action='store_true')
     args = parser.parse_args()
-    state = restore()
+    saved = json.loads((SNAPSHOT / 'state.json').read_text())
+    work = ROOT / saved.get('working_directory', str(WORK.relative_to(ROOT)))
+    if not work.resolve().is_relative_to((ROOT / 'results').resolve()):
+        raise ValueError('Saved working campaign must be under results/, never the canonical backup')
+    state = restore(work=work)
     if args.restore_only:
         return
     config = state['config']
@@ -53,7 +57,7 @@ def main():
         return
     # Exact options of the paused campaign. The driver validates config and pool digest.
     cmd = [sys.executable, str(ROOT / 'tools/train_ranked.py'), '--base', config['base'],
-           '--out', str(WORK.relative_to(ROOT)), '--minutes', str(sum(config['minutes'])),
+           '--out', str(work.relative_to(ROOT)), '--minutes', str(sum(config['minutes'])),
            '--pilot-minutes', str(config['minutes'][0]),
            '--block-minutes', str(max(config['minutes'][1:] or config['minutes'])),
            '--rounds', str(config['rounds']), '--seed', str(config['seed'])]

@@ -219,6 +219,8 @@ def campaign(args):
     state = read(statefile)
     if config != state['config'] or pool_digest(out / 'pool') != state['pool_sha256']:
         raise ValueError('Campaign settings or frozen pool changed. Use the original settings or a fresh --out.')
+    if out.resolve().is_relative_to(REPO.resolve()):
+        state['working_directory'] = str(out.resolve().relative_to(REPO.resolve()))
     if getattr(args, 'target_ranking', None) is not None:
         state['target_ranking'] = args.target_ranking
         write(statefile, state)

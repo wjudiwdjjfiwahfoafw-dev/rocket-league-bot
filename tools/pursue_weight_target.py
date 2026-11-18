@@ -2,6 +2,7 @@
 """Run the predeclared, bounded weight-only 1700 experiment sequence.
 No calibration, temperature override or deterministic evaluation is invoked.
 """
+import argparse
 import fcntl
 import json
 from pathlib import Path
@@ -38,11 +39,14 @@ def run(command):
 
 def achieved(state):
     best = state['best']
-    audit = state.get('audit', {}).get(str(best['steps']), {})
+    audit = (state.get('audit') or {}).get(str(best['steps']), {})
     return all(v >= 1700 for v in (best['screen']['Ranking'], best['confirm']['Ranking'], audit.get('Ranking', 0)))
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--curriculum-only', action='store_true', help='Skip the original continuation and branch a fresh recipe from its selected native best')
+    args = parser.parse_args()
     (ROOT / 'build').mkdir(exist_ok=True)
     with (ROOT / 'build/weight-target.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -50,12 +54,13 @@ def main():
         signal.signal(signal.SIGINT, stop)
         restore()
         driver = [sys.executable, 'tools/train_ranked.py']
-        run(driver + ['--base', 'checkpoints/3043214022', '--out', str(WORK.relative_to(ROOT)),
-                      '--minutes', '180', '--rounds', '40', '--target-ranking', '1700',
-                      '--monitor', '--github-backup'])
+        if not args.curriculum_only:
+            run(driver + ['--base', 'checkpoints/3043214022', '--out', str(WORK.relative_to(ROOT)),
+                          '--minutes', '180', '--rounds', '40', '--target-ranking', '1700',
+                          '--monitor', '--github-backup'])
         backup(WORK, ROOT / 'training-backup', git('branch', '--show-current'), {})
         state = json.loads((WORK / 'state.json').read_text())
-        if state['status'] != 'complete':
+        if state['status'] != 'complete' and not args.curriculum_only:
             print('Original campaign paused; not starting another trainer.', flush=True)
             return
         if achieved(state):

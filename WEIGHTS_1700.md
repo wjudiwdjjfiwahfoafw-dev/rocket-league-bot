@@ -46,3 +46,14 @@ transformed policy's cached score from being reused for a different model.
 Browser metrics and GitHub checkpoint backups run with training. Only the current
 branch is pushed. `training-backup/` is the newest recoverable native campaign;
 source weights for a fresh campaign are separately preserved under `checkpoints/`.
+
+## Adaptive decision after the resumed stage-5 screen
+
+The remaining 7.56 native trainer minutes of stage 5 produced `3165722310`:
+1v1 1459.52, 2v2 1619.35, 3v3 1561.07, mean **1546.65**, below the selected
+1570.05. No confirmation or promotion occurred. The original continuation was
+paused early in stage 6 rather than spending another hour on that recipe.
+The next experiment now starts immediately from selected native PPO `3137998278`
+using `tools/pursue_weight_target.py --curriculum-only`; the reward/curriculum
+settings above were specified before seeing this screen. This change in scheduling
+is adaptive, not a predeclared stop rule. No held-out audit informed it.
