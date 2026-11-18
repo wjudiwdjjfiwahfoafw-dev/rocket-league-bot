@@ -77,6 +77,8 @@ def backup(campaign, destination, branch, status):
     candidates = sorted((p for p in (campaign / 'learner').iterdir() if p.name.isdecimal()), key=lambda p: int(p.name))
     latest = candidates[-1]
     state = json.loads((campaign / 'state.json').read_text())
+    if state.get('best') is None:
+        raise RuntimeError('Waiting for baseline evaluation; prior remote snapshot and source weights remain protected')
     sources = [latest, campaign / 'learner/policy_versions', campaign / 'pool',
                campaign / 'best' / str(state['best']['steps'])]
     before = [signature(p) for p in sources]
