@@ -58,7 +58,7 @@ static float g_NoTouchTimeout = 10;
 // For kickoffs: while the ball still lies at rest on the centre spot, +1 per step for a player who is closer to it
 // than every opponent, -1 for one who is further away (so it sums to zero over both players of a 1v1).
 // Self-play alone can drift to kickoffs that arrive late, because the copy on the other side does the same and nobody
-// is punished for it. Older versions that rush the ball then win the kickoffs (see "The kickoff" in ELO_REPORT.md).
+// is punished for it. Older versions that rush the ball then win the kickoffs (observed in earlier kickoff experiments).
 class KickoffProximityReward : public Reward {
 public:
 	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) {

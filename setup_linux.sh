@@ -195,7 +195,7 @@ cmake --build "$BUILD_DIR" --target GigaLearnBot -j "$JOBS"
 step "Done"
 echo "Executable: $BUILD_DIR/GigaLearnBot"
 echo
-echo "Train on a CPU:      ./train_cpu.sh --max-minutes 30"
+echo "Resume paused CPU training: python3 tools/resume_training.py"
 echo "Train on a GPU:      $BUILD_DIR/GigaLearnBot            (defaults = the original example's settings)"
 echo "Evaluate:            $BUILD_DIR/GigaLearnBot --eval checkpoints"
 echo "All options:         $BUILD_DIR/GigaLearnBot --help"
