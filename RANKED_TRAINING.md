@@ -169,3 +169,15 @@ both against seed 4001/80. Candidate results do not overwrite the main PPO
 campaign's selected checkpoint or masquerade as its training history. Changing
 temperatures repeatedly based on scores is model selection, so the held-out test
 must remain unused until a candidate passes the declared screen/confirmation.
+
+Build the calibration utility with the same configured libtorch/ABI as the trainer:
+`cmake --build build --target CalibratePolicy -j 1`. Then run, for example:
+
+```bash
+python3 tools/test_calibration_candidates.py --base checkpoints/3035220582 \
+  --campaign results/ranking_3043214022/campaign \
+  --out results/target1600-calibration --temperatures 0.65 0.4 1.3
+```
+
+The script stops when the target is verified. It reuses only the measurements
+within each temperature's own directory, not a different policy's cached scores.
