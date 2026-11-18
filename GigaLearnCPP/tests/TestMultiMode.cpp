@@ -502,8 +502,10 @@ static void TestLearner() {
 		RG_NO_GRAD;
 		FusedLayer::SetEnabled(true);
 		ppo.numInferThreads = 3;
-		torch::Tensor actions, logProbs;
-		ppo.InferActions(batch.states, batch.actionMasks, &actions, &logProbs);
+		torch::Tensor actions, logProbs, values;
+		ppo.InferActions(batch.states, batch.actionMasks, &actions, &logProbs, nullptr, &values);
+		Check(MaxRelDiff(values, ppo.InferCriticInParts(batch.states)) < 1e-4,
+			"critic predictions from the joint rollout pass match separate threaded inference");
 
 		auto probs = PPOLearner::InferPolicyProbsFromModels(ppo.models, batch.states, batch.actionMasks, 1, false);
 		auto expectedLogProbs = probs.log().gather(-1, actions.unsqueeze(-1)).flatten();

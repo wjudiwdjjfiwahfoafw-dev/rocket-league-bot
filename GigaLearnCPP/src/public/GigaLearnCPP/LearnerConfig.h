@@ -36,6 +36,7 @@ namespace GGL {
 		// Save every timestep
 		// Set to zero to just use timestepsPerIteration
 		int64_t tsPerSave = 1'000'000;
+		uint64_t maxTimesteps = 0; // PPO: stop at an iteration boundary, counting learner steps only
 
 		// Optional notes that are saved into every checkpoint as "INFO.json" (e.g. which model config and obs builder it needs).
 		// The learner itself doesn't read them.

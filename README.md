@@ -52,8 +52,16 @@ This speed is not at all final and I plan to make the library much faster once I
 ***Coming Soon**:
 - Training against older versions
 
-## Installation
-*There's no installation guide for now as I plan to rework several aspects of the library to make it easier to install.*
+## Continue training the bundled bot (Linux, CPU)
+
+```bash
+./setup_linux.sh                         # build the trainer and install the soccar meshes
+./train_1v1_2v2_3v3.sh --max-minutes 10  # resume the newest checkpoint, save and stop
+```
+
+The preset trains one policy in 1v1, 2v2 and 3v3 in RocketSim. It reads and writes `checkpoints/` and keeps the two newest training checkpoints. To keep the originals untouched, copy that directory (including `policy_versions/`) and pass `--checkpoints <copy> --new-run` to the training script. Metrics are local unless you opt into W&B. See [training status](STATUS.md) for the continuation and head-to-head results.
+
+To train for several hours and select on **mean Elo across 1v1, 2v2 and 3v3**, use the [ranked CPU campaign](RANKED_TRAINING.md). It keeps the source weights untouched and separates the latest training checkpoint from the best confirmed one.
 
 ## Bringing In Rewards/Obs Builders/Etc. from RLGymPPO_CPP
 State changes:

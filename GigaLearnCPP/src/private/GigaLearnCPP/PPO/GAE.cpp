@@ -39,8 +39,8 @@ void GGL::GAE::Compute(
 		numTruncs = 0;
 	}
 
-	auto _outReturns = std::vector<float>(numReturns, 0);
-	auto _outAdvantages = std::vector<float>(numReturns, 0);
+	auto _outReturns = outReturns.data_ptr<float>();
+	auto _outAdvantages = outAdvantages.data_ptr<float>();
 
 	for (int step = numReturns - 1; step >= 0; step--) {
 		uint8_t terminal = _terminals[step];
@@ -74,7 +74,8 @@ void GGL::GAE::Compute(
 			if (truncCount >= numTruncs)
 				RG_ERR_CLOSE("GAE encountered too many truncated terminals, not enough val preds (max: " << numTruncs << ")")
 
-			nextValPred = _truncValPreds[truncCount];
+			// Bootstrap states were appended in FORWARD trajectory order. GAE traverses backwards.
+			nextValPred = _truncValPreds[numTruncs - 1 - truncCount];
 			truncCount++;
 		} else {
 			// The very last step has no next value prediction (reading it would be out of bounds).
@@ -98,8 +99,6 @@ void GGL::GAE::Compute(
 		if (truncCount != truncValPreds.size(0))
 			RG_ERR_CLOSE("GAE didn't receive expected truncation count (only " << truncCount << "/" << truncValPreds.size(0) << ")");
 
-	outReturns = torch::tensor(_outReturns);
-	outAdvantages = torch::tensor(_outAdvantages);
 	outTargetValues = valPreds.slice(0, 0, numReturns) + outAdvantages;
 	outRewClipPortion = (totalRew - totalClippedRew) / RS_MAX(totalRew, 1e-7f);
 }

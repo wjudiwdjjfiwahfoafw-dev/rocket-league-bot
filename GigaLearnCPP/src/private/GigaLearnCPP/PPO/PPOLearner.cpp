@@ -112,11 +112,13 @@ torch::Tensor GGL::PPOLearner::PolicyProbsFromLogits(torch::Tensor logits, torch
 torch::Tensor GGL::PPOLearner::InferPolicyProbsFromModels(
 	ModelSet& models,
 	torch::Tensor obs, torch::Tensor actionMasks,
-	float temperature, bool halfPrec) {
+	float temperature, bool halfPrec, torch::Tensor* outValues) {
 
 	if (models["shared_head"])
 		obs = models["shared_head"]->Forward(obs, halfPrec);
 
+	if (outValues)
+		*outValues = models["critic"]->Forward(obs, halfPrec).flatten();
 	auto logits = models["policy"]->Forward(obs, halfPrec);
 	return PolicyProbsFromLogits(logits, actionMasks, temperature);
 }
@@ -138,28 +140,28 @@ void GGL::PPOLearner::ChooseActions(torch::Tensor probs, bool deterministic, tor
 			*outActions = action.flatten();
 	} else {
 		auto action = torch::multinomial(probs, 1, true);
-		auto logProb = torch::log(probs).gather(-1, action);
 		if (outActions)
 			*outActions = action.flatten();
 
 		if (outLogProbs)
-			*outLogProbs = logProb.flatten();
+			*outLogProbs = probs.gather(-1, action).log().flatten();
 	}
 }
 
-void GGL::PPOLearner::InferActions(torch::Tensor obs, torch::Tensor actionMasks, torch::Tensor* outActions, torch::Tensor* outLogProbs, ModelSet* models) {
+void GGL::PPOLearner::InferActions(torch::Tensor obs, torch::Tensor actionMasks, torch::Tensor* outActions, torch::Tensor* outLogProbs, ModelSet* models, torch::Tensor* outValues) {
 	ModelSet& inferModels = models ? *models : this->models;
 
 	int64_t amount = obs.size(0);
 	int numThreads = (int)RS_MIN((int64_t)numInferThreads, amount / INFER_THREADS_MIN_ROWS);
 	if (!device.is_cpu() || numThreads <= 1 || config.useHalfPrecision || torch::GradMode::is_enabled()) {
-		InferActionsFromModels(inferModels, obs, actionMasks, config.deterministic, config.policyTemperature, config.useHalfPrecision, outActions, outLogProbs);
+		auto probs = InferPolicyProbsFromModels(inferModels, obs, actionMasks, config.policyTemperature, config.useHalfPrecision, outValues);
+		ChooseActions(probs, config.deterministic, outActions, outLogProbs);
 		return;
 	}
 
 	// Several threads, each computes the action probabilities of its share of the observations (same scheme as in AccumulateBatchGrads()).
 	// The actions are then chosen on this thread, so they don't depend on thread timing.
-	std::vector<torch::Tensor> partProbs(numThreads);
+	std::vector<torch::Tensor> partProbs(numThreads), partValues(outValues ? numThreads : 0);
 	std::vector<std::exception_ptr> threadErrors(numThreads);
 	auto fnThread = [&](int threadIdx) {
 		try {
@@ -168,7 +170,8 @@ void GGL::PPOLearner::InferActions(torch::Tensor obs, torch::Tensor actionMasks,
 			int64_t start = amount * threadIdx / numThreads;
 			int64_t stop = amount * (threadIdx + 1) / numThreads;
 			partProbs[threadIdx] = InferPolicyProbsFromModels(
-				inferModels, obs.slice(0, start, stop), actionMasks.slice(0, start, stop), config.policyTemperature, false
+				inferModels, obs.slice(0, start, stop), actionMasks.slice(0, start, stop), config.policyTemperature, false,
+				outValues ? &partValues[threadIdx] : nullptr
 			);
 		} catch (...) {
 			threadErrors[threadIdx] = std::current_exception();
@@ -184,6 +187,8 @@ void GGL::PPOLearner::InferActions(torch::Tensor obs, torch::Tensor actionMasks,
 		if (error)
 			std::rethrow_exception(error);
 
+	if (outValues)
+		*outValues = torch::cat(partValues, 0);
 	ChooseActions(torch::cat(partProbs, 0), config.deterministic, outActions, outLogProbs);
 }
 

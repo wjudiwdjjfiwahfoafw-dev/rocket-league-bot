@@ -1,0 +1,114 @@
+{
+    "a_name": "checkpoints/3043214022",
+    "b_name": "checkpoints/3035220582",
+    "modes": {
+        "1v1": {
+            "a": {
+                "air_ratio": 0.4133357199288959,
+                "avg_ball_distance": 1439.2492589399133,
+                "avg_boost": 15.60846775527842,
+                "avg_speed": 1305.0388323941156,
+                "ball_touches": 3507,
+                "ball_touches_per_minute": 19.481409243531502,
+                "goals": 128,
+                "kickoff_first_touches": 250,
+                "model": "s",
+                "name": "checkpoints/3043214022"
+            },
+            "b": {
+                "air_ratio": 0.3959670649812364,
+                "avg_ball_distance": 1379.8912203058574,
+                "avg_boost": 17.30257625354016,
+                "avg_speed": 1318.8169001537167,
+                "ball_touches": 3739,
+                "ball_touches_per_minute": 20.770170847323723,
+                "goals": 156,
+                "kickoff_first_touches": 280,
+                "model": "s",
+                "name": "checkpoints/3035220582"
+            },
+            "deterministic": false,
+            "game_minutes": 180.01777777777778,
+            "kickoffs": 317,
+            "max_seconds": 0.0,
+            "max_seconds_ends": 0,
+            "mode": "1v1",
+            "no_touch_timeout": 10.0,
+            "no_touch_timeouts": 1,
+            "real_seconds": 15.14192816,
+            "seed": 31415
+        },
+        "2v2": {
+            "a": {
+                "air_ratio": 0.39906861050760417,
+                "avg_ball_distance": 2214.1990113421293,
+                "avg_boost": 17.75399757177202,
+                "avg_speed": 1174.3404590613459,
+                "ball_touches": 3399,
+                "ball_touches_per_minute": 18.881468496938574,
+                "goals": 115,
+                "kickoff_first_touches": 209,
+                "model": "s",
+                "name": "checkpoints/3043214022"
+            },
+            "b": {
+                "air_ratio": 0.3809901491210745,
+                "avg_ball_distance": 2153.0125489460956,
+                "avg_boost": 19.375290465426342,
+                "avg_speed": 1176.1657209569453,
+                "ball_touches": 3621,
+                "ball_touches_per_minute": 20.114680031601818,
+                "goals": 99,
+                "kickoff_first_touches": 210,
+                "model": "s",
+                "name": "checkpoints/3035220582"
+            },
+            "deterministic": false,
+            "game_minutes": 180.01777777777778,
+            "kickoffs": 246,
+            "max_seconds": 0.0,
+            "max_seconds_ends": 0,
+            "mode": "2v2",
+            "no_touch_timeout": 10.0,
+            "no_touch_timeouts": 0,
+            "real_seconds": 24.07263328,
+            "seed": 31415
+        },
+        "3v3": {
+            "a": {
+                "air_ratio": 0.3949712785568503,
+                "avg_ball_distance": 2554.9521755428154,
+                "avg_boost": 18.84505403518022,
+                "avg_speed": 1118.0313991998032,
+                "ball_touches": 3461,
+                "ball_touches_per_minute": 19.22587892553822,
+                "goals": 65,
+                "kickoff_first_touches": 145,
+                "model": "s",
+                "name": "checkpoints/3043214022"
+            },
+            "b": {
+                "air_ratio": 0.37734956218315885,
+                "avg_ball_distance": 2500.6751974755243,
+                "avg_boost": 20.61683854217981,
+                "avg_speed": 1110.4940200947822,
+                "ball_touches": 3701,
+                "ball_touches_per_minute": 20.559080584633616,
+                "goals": 66,
+                "kickoff_first_touches": 141,
+                "model": "s",
+                "name": "checkpoints/3035220582"
+            },
+            "deterministic": false,
+            "game_minutes": 180.01777777777778,
+            "kickoffs": 163,
+            "max_seconds": 0.0,
+            "max_seconds_ends": 0,
+            "mode": "3v3",
+            "no_touch_timeout": 10.0,
+            "no_touch_timeouts": 0,
+            "real_seconds": 34.456073791,
+            "seed": 31415
+        }
+    }
+}

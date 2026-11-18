@@ -163,7 +163,25 @@ void GGL::PolicyVersionManager::SortVersions() {
 
 /////////////////////////////////////////////////////////////////////
 
-void GGL::PolicyVersionManager::RunSkillMatches(PPOLearner* ppo, Report& report) {
+void GGL::PolicyVersionManager::PrepareAnchoredPool(uint32_t seed) {
+	if (versions.empty()) RG_ERR_CLOSE("Cannot rate against an empty anchored pool");
+	skill.curRatings.data.clear(); // No live rating from the candidate checkpoint enters its evaluation.
+	for (size_t i = 0; i < skill.envSet->arenas.size(); ++i) {
+		auto setter = static_cast<RLGC::FuzzedKickoffState*>(skill.envSet->stateSetters[i]);
+		setter->SetSeed(seed + (uint32_t)i + 1);
+		auto name = SkillRating::GetModeName(skill.envSet->state.gameStates[i]);
+		if (skill.curRatings.data.contains(name)) continue;
+		double sum = 0;
+		for (const auto& v : versions) {
+			if (!v.ratings.data.contains(name))
+				RG_ERR_CLOSE("Anchored opponent " << v.timesteps << " has no " << name << " rating");
+			sum += v.ratings.data.at(name);
+		}
+		skill.curRatings.data[name] = (float)(sum / versions.size());
+	}
+}
+
+void GGL::PolicyVersionManager::RunSkillMatches(PPOLearner* ppo, Report& report, int fixture) {
 	RG_NO_GRAD;
 	
 	auto fnUpdateRatings = [this](SkillRating& winner, SkillRating& loser, RLGC::GameState& state) {
@@ -174,22 +192,33 @@ void GGL::PolicyVersionManager::RunSkillMatches(PPOLearner* ppo, Report& report)
 		float expDelta = (loserRating - winnerRating) / 400;
 		float expected = 1 / (powf(10, expDelta) + 1);
 
-		winnerRating += skill.config.ratingInc * (1 - expected);
-		loserRating += skill.config.ratingInc * (expected - 1);
+		if (!skill.config.anchored || &winner == &skill.curRatings)
+			winnerRating += skill.config.ratingInc * (1 - expected);
+		if (!skill.config.anchored || &loser == &skill.curRatings)
+			loserRating += skill.config.ratingInc * (expected - 1);
 	};
 
 	
 	Team newTeam;
 	int oldVersionIndex;
 	float totalSimTime;
+	if (fixture >= 0) {
+		skill.doContinuation = false;
+		skill.curGoals = 0;
+	}
 	if (skill.doContinuation) {
 		RG_ASSERT(skill.prevOldVersionIndex < versions.size());
 		oldVersionIndex = skill.prevOldVersionIndex;
 		newTeam = skill.prevNewTeam;
 		totalSimTime = skill.prevSimTime;
 	} else {
-		oldVersionIndex = Math::RandInt(0, versions.size());
-		newTeam = (Team)Math::RandInt(0, 2);
+		if (fixture >= 0) {
+			oldVersionIndex = fixture % versions.size();
+			newTeam = (Team)((oldVersionIndex + fixture / versions.size()) % 2);
+		} else {
+			oldVersionIndex = Math::RandInt(0, versions.size());
+			newTeam = (Team)Math::RandInt(0, 2);
+		}
 		totalSimTime = 0;
 
 		// Every set of matches starts from kickoffs.
@@ -261,16 +290,15 @@ void GGL::PolicyVersionManager::RunSkillMatches(PPOLearner* ppo, Report& report)
 		skill.envSet->StepFirstHalf(true);
 
 		torch::Tensor tNewActions, tOldActions;
-		torch::Tensor _tLogProbs;
 
 		PPOLearner::InferActionsFromModels(
 			ppo->models, tNewStates.to(ppo->device, true), tNewActionMasks.to(ppo->device, true), 
 			skill.config.deterministic, ppo->config.policyTemperature, ppo->config.useHalfPrecision, 
-			&tNewActions, &_tLogProbs);
+			&tNewActions, nullptr);
 		PPOLearner::InferActionsFromModels(
 			oldVersion.models, tOldStates.to(ppo->device, true), tOldActionMasks.to(ppo->device, true), 
 			skill.config.deterministic, ppo->config.policyTemperature, ppo->config.useHalfPrecision,
-			&tOldActions, &_tLogProbs);
+			&tOldActions, nullptr);
 
 		auto newActions = TENSOR_TO_VEC<int>(tNewActions);
 		auto oldActions = TENSOR_TO_VEC<int>(tOldActions);

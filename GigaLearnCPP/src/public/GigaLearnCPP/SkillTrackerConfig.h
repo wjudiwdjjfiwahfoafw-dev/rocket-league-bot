@@ -5,6 +5,8 @@
 namespace GGL {
 	struct SkillTrackerConfig {
 		bool enabled = false;
+		// Standalone evaluation only: common starting ratings, immutable opponent Elos, balanced fixtures.
+		bool anchored = false;
 
 		// Number of arenas for evaluation
 		// Don't put this much higher than your CPU thread count

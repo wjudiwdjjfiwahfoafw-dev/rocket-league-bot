@@ -86,48 +86,36 @@ RLGC::FList RLGC::MultiModeObs::BuildObs(const Player& player, const GameState& 
 
 	// Player slots
 	float selfBallDist = (ball.pos - selfPhys.pos).Length();
-	const int groupSlots[2] = { NUM_TEAMMATE_SLOTS, NUM_OPPONENT_SLOTS };
-	std::vector<FList> groups[2] = {};
-
-	for (auto& otherPlayer : state.players) {
-		if (otherPlayer.carId == player.carId)
+	// Order pointers, not 42-float temporary vectors. This keeps BuildObs to one allocation.
+	std::array<const Player*, NUM_SLOTS> ordered = {};
+	int counts[2] = {};
+	for (auto& other : state.players) {
+		if (other.carId == player.carId)
 			continue;
-
-		bool isTeammate = otherPlayer.team == player.team;
-		auto& group = groups[isTeammate ? 0 : 1];
-		if (group.size() >= groupSlots[isTeammate ? 0 : 1]) {
-			RG_ERR_CLOSE(
-				"MultiModeObs: Too many " << (isTeammate ? "teammates" : "opponents") << ", the observation has slots for " <<
-				NUM_TEAMMATE_SLOTS << " teammates and " << NUM_OPPONENT_SLOTS << " opponents (" << state.players.size() << " players are in this game)"
-			);
-		}
-
-		auto phys = MirrorPhysX(InvertPhys(otherPlayer, inv), mirror);
-
-		FList slot = {};
-		slot.reserve(SLOT_SIZE);
-		slot += 1.f;
-		slot += (float)isTeammate;
-		AddPlayerInputs(slot, otherPlayer, phys, ball);
-
-		Vec relPos = phys.pos - selfPhys.pos;
-		slot += relPos * POS_COEF;
-		slot += (phys.vel - selfPhys.vel) * VEL_COEF;
-		slot += selfPhys.rotMat.Dot(relPos) * POS_COEF;
-		slot += ((ball.pos - phys.pos).Length() - selfBallDist) * POS_COEF;
-
-		group.push_back(slot);
+		int group = other.team == player.team ? 0 : 1;
+		if (counts[group] >= (group ? NUM_OPPONENT_SLOTS : NUM_TEAMMATE_SLOTS))
+			RG_ERR_CLOSE("MultiModeObs: too many players for the available slots");
+		ordered[(group ? NUM_TEAMMATE_SLOTS : 0) + counts[group]++] = &other;
 	}
-
-	for (int i = 0; i < 2; i++) {
-		auto& group = groups[i];
-		group.resize(groupSlots[i], FList(SLOT_SIZE, 0));
-
-		if (shuffleSlots)
-			std::shuffle(group.begin(), group.end(), ::Math::GetRandEngine());
-
-		for (auto& slot : group)
-			obs += slot;
+	if (shuffleSlots) {
+		auto middle = ordered.begin() + NUM_TEAMMATE_SLOTS;
+		std::shuffle(ordered.begin(), middle, ::Math::GetRandEngine());
+		std::shuffle(middle, ordered.end(), ::Math::GetRandEngine());
+	}
+	for (const Player* other : ordered) {
+		if (!other) {
+			obs.resize(obs.size() + SLOT_SIZE, 0.f);
+			continue;
+		}
+		auto phys = MirrorPhysX(InvertPhys(*other, inv), mirror);
+		obs += 1.f;
+		obs += (float)(other->team == player.team);
+		AddPlayerInputs(obs, *other, phys, ball);
+		Vec relPos = phys.pos - selfPhys.pos;
+		obs += relPos * POS_COEF;
+		obs += (phys.vel - selfPhys.vel) * VEL_COEF;
+		obs += selfPhys.rotMat.Dot(relPos) * POS_COEF;
+		obs += ((ball.pos - phys.pos).Length() - selfBallDist) * POS_COEF;
 	}
 
 	return obs;

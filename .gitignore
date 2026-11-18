@@ -55,3 +55,12 @@ libtorch
 /wandb
 
 RUN.lnk
+
+# Python tool bytecode
+__pycache__/
+
+# Transient campaign coordination and W&B diagnostics (keep the syncable .wandb run)
+/results/**/.lock
+/results/**/wandb/latest-run
+/results/**/wandb/debug*.log
+/results/**/wandb/offline-run-*/logs/

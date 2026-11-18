@@ -400,18 +400,18 @@ void SetModelConfig(PPOLearnerConfig& ppo) {
 }
 
 // Sets the game modes to train in (--modes).
-// The modes take turns in a pattern that gives every mode the same number of games: for 1v1, 2v2 and 3v3 that is
-// one game of each in every cycle of three (e.g. --games 45 gives 15 games of each mode).
-void SetTrainModes(const std::vector<int>& teamSizes) {
+// Equal arenas (legacy) or equal player experience: for 1v1/2v2/3v3 a 6:3:2 arena mix
+// gives each mode 6 players per side. Multiples of 11 arenas implement that mix exactly.
+void SetTrainModes(const std::vector<int>& teamSizes, bool balancePlayers) {
 	g_TrainTeamSizes = teamSizes;
 	g_TeamSizePattern.clear();
 
-	std::vector<int> gamesOfMode = {}, placedOfMode = {};
+	std::vector<int> gamesOfMode = {}, placedOfMode(teamSizes.size(), 0);
 	int patternSize = 0;
 	for (int teamSize : teamSizes) {
-		gamesOfMode.push_back(1);
-		placedOfMode.push_back(0);
-		patternSize += gamesOfMode.back();
+		int games = balancePlayers ? 6 / teamSize : 1;
+		gamesOfMode.push_back(games);
+		patternSize += games;
 	}
 
 	// Spread every mode evenly over the pattern
@@ -517,6 +517,9 @@ static const OptionDef OPTION_DEFS[] = {
 	{ "device", "auto", "auto, cpu or cuda" },
 	{ "games", "256", "Number of games simulated at once" },
 	{ "ts-per-itr", "50000", "Timesteps collected per iteration" },
+	{ "mode-balance", "games", "Allocate arenas equally by game (games) or by player timesteps (players)" },
+	{ "fixed-rollout", NULL, "Bootstrap unfinished trajectories at each update; keep playing the same games with the new policy" },
+	{ "lean-metrics", NULL, "Skip per-player and reward-component diagnostics; keep PPO, throughput and skill ratings" },
 	{ "batch-size", "0", "PPO batch size, 0 = same as --ts-per-itr. Smaller = more updates per iteration" },
 	{ "minibatch-size", "0", "Samples sent through the network at once while learning (the gradients are added up, so the result stays the same). 0 = automatic: the whole batch on a GPU, about 1024 on a CPU" },
 	{ "threads", "0", "CPU threads used for learning on the CPU, 0 = automatic" },
@@ -560,6 +563,7 @@ static const OptionDef OPTION_DEFS[] = {
 	{ "train-vs-old", "0", "Portion of iterations (0-1) in which the bot trains against a saved old version instead of itself (the framework suggests 0.15)" },
 	{ "rate-rounds", "0", "Don't train, rate the newest checkpoint in --checkpoints with GigaLearn's skill tracker instead: it plays this many rounds of rating games against saved policy versions. Nothing is saved" },
 	{ "rate-versions", "", "With --rate-rounds: folder of the policy versions to play against (default: policy_versions in --checkpoints). Give the same folder for checkpoints of different runs to rate them against the same opponents" },
+	{ "rate-anchored", NULL, "With --rate-rounds and --rate-versions: fix opponent Elo, initialize each mode at its pool mean and cycle opponents on both colors. Rounds must be a multiple of twice the pool size" },
 	{ "rate-out", "", "With --rate-rounds: also write the result to this JSON file" },
 	{ "expand-1v1", "", "Don't train: copy the newest checkpoint of a 1v1-only model (s-1v1) from this folder to --checkpoints as a checkpoint of the full model (s), together with its policy versions. The copy plays 1v1 exactly as before, and starts 2v2 and 3v3 with what it does in 1v1, so it can be trained in more modes" },
 	{ "render", NULL, "Don't train, send the games of the newest checkpoint to RocketSimVis instead" },
@@ -954,6 +958,7 @@ static std::atomic<int> g_StopSignals = 0;
 static std::chrono::steady_clock::time_point g_TrainStartTime = {};
 static double g_MaxTrainSeconds = 0;
 static uint64_t g_MaxTimesteps = 0;
+static bool g_LeanMetrics = false;
 
 // First Ctrl+C (or kill): finish the current iteration, save, and stop. Second one: exit immediately.
 void OnStopSignal(int signalNum) {
@@ -968,15 +973,6 @@ double GetTrainSeconds() {
 
 void StepCallback(Learner* learner, const std::vector<GameState>& states, Report& report) {
 
-	// Count the timesteps of the current iteration (the learner only updates its total after each iteration)
-	static uint64_t curIteration = UINT64_MAX, curIterationSteps = 0;
-	if (learner->totalIterations != curIteration) {
-		curIteration = learner->totalIterations;
-		curIterationSteps = 0;
-	}
-	for (auto& state : states)
-		curIterationSteps += state.players.size();
-
 	// Check if we should stop training
 	// The learner then finishes the current iteration, saves a checkpoint, and returns from Start()
 	if (!learner->quitRequested && !learner->config.renderMode) {
@@ -985,8 +981,6 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 			stopReason = "interrupted";
 		} else if (g_MaxTrainSeconds > 0 && GetTrainSeconds() >= g_MaxTrainSeconds) {
 			stopReason = "time limit reached";
-		} else if (g_MaxTimesteps > 0 && (learner->totalTimesteps + curIterationSteps) >= g_MaxTimesteps) {
-			stopReason = "timestep limit reached";
 		}
 
 		if (stopReason) {
@@ -996,6 +990,8 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 			learner->quitRequested = true;
 		}
 	}
+
+	if (g_LeanMetrics) return; // PPO, timings, step reward and all ratings are still reported
 
 	// To prevent expensive metrics from eating at performance, we will only run them on 1/4th of steps
 	// This doesn't really matter unless you have expensive metrics (which this example doesn't)
@@ -1064,6 +1060,8 @@ int RunRating(Learner* learner, const Options& opt, int numRounds) {
 	};
 	std::map<uint64_t, OpponentStats> opponents;
 	std::map<std::string, std::vector<double>> ratingSeries;
+	std::map<std::string, std::pair<int, int>> modeGoals;
+	std::vector<double> rankingHistory;
 	std::map<std::string, float> startRatings = learner->GetSkillRatings();
 	double goalsFor = 0, goalsAgainst = 0, gameMinutes = 0;
 	double kickoffsFor = 0, kickoffsAgainst = 0;
@@ -1088,13 +1086,24 @@ int RunRating(Learner* learner, const Options& opt, int numRounds) {
 		opponent.goalsAgainst += roundGoalsAgainst;
 		opponent.rounds++;
 
-		for (auto& pair : report.data) {
-			if (pair.first.rfind(OPPONENT_RATING_PREFIX, 0) == 0) {
-				opponent.ratings[pair.first.substr(OPPONENT_RATING_PREFIX.size())] = pair.second;
-			} else if (pair.first.rfind(RATING_PREFIX, 0) == 0) {
-				ratingSeries[pair.first.substr(RATING_PREFIX.size())].push_back(pair.second);
+		double sum = 0;
+		int ratedModes = 0;
+		for (int size : g_TrainTeamSizes) {
+			auto name = ModeName(size);
+			for (bool scored : {true, false}) {
+				auto key = std::string(scored ? "Skill Matches/Goals For " : "Skill Matches/Goals Against ") + name;
+				if (report.Has(key)) (scored ? modeGoals[name].first : modeGoals[name].second) += (int)report[key];
 			}
+			if (report.Has(RATING_PREFIX + name)) {
+				double value = report[RATING_PREFIX + name];
+				ratingSeries[name].push_back(value);
+				sum += value;
+				ratedModes++;
+			}
+			if (report.Has(OPPONENT_RATING_PREFIX + name))
+				opponent.ratings[name] = report[OPPONENT_RATING_PREFIX + name];
 		}
+		if (ratedModes) rankingHistory.push_back(sum / ratedModes);
 	});
 	double realSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
 
@@ -1107,7 +1116,11 @@ int RunRating(Learner* learner, const Options& opt, int numRounds) {
 	j["checkpoint_timesteps"] = learner->totalTimesteps;
 	j["versions_folder"] = versionsFolder.string();
 	j["rounds"] = roundsPlayed;
+	j["anchored"] = tracker.anchored;
+	j["seed"] = learner->config.randomSeed;
 	j["goals_for"] = goalsFor;
+	for (auto& [name, goals] : modeGoals)
+		j["mode_goals"][name] = { { "for", goals.first }, { "against", goals.second } };
 	j["kickoff_first_touches_for"] = kickoffsFor;
 	j["kickoff_first_touches_against"] = kickoffsAgainst;
 	j["goals_against"] = goalsAgainst;
@@ -1146,11 +1159,16 @@ int RunRating(Learner* learner, const Options& opt, int numRounds) {
 	}
 
 	if (!ratingSeries.empty()) {
-		double avgAll = 0;
-		for (auto& pair : ratingSeries)
+		double avgAll = 0, startSum = 0;
+		for (auto& pair : ratingSeries) {
 			avgAll += j["ratings"][pair.first]["average"].get<double>();
+			startSum += j["ratings"][pair.first]["start"].get<double>();
+		}
 		avgAll /= ratingSeries.size();
 		RG_LOG("\tRating/Ranking: " << avgAll);
+		j["ratings"]["Ranking"] = { { "average", avgAll }, { "start", startSum / ratingSeries.size() },
+			{ "end", rankingHistory.back() }, { "series", rankingHistory },
+			{ "average_rounds", rankingHistory.size() - rankingHistory.size() / 4 } };
 		j["ratings"]["Average"] = { { "average", avgAll } };
 	}
 
@@ -1186,7 +1204,10 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 
 	// Which bot. If training continues from a checkpoint, it is the one that the checkpoint was made with
 	SelectBot(opt, FindNewestCheckpoint(opt.Str("checkpoints")));
-	SetTrainModes(ParseModes(opt.Str("modes"), "modes"));
+	std::string balance = opt.Str("mode-balance");
+	if (balance != "games" && balance != "players")
+		RG_ERR_CLOSE("--mode-balance must be games or players");
+	SetTrainModes(ParseModes(opt.Str("modes"), "modes"), balance == "players");
 
 	// Make configuration for the learner
 	LearnerConfig cfg = {};
@@ -1227,6 +1248,9 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 	// The random seed can have a strong effect on the outcome of a run
 	cfg.randomSeed = opt.Int("seed");
 
+	g_LeanMetrics = opt.Has("lean-metrics");
+	cfg.addRewardsToMetrics = !g_LeanMetrics;
+	cfg.ppo.fixedRollout = opt.Has("fixed-rollout");
 	cfg.ppo.tsPerItr = opt.Int("ts-per-itr");
 	cfg.ppo.batchSize = opt.Int("batch-size");
 	if (cfg.ppo.batchSize <= 0)
@@ -1291,6 +1315,9 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 
 	// Rating only: no training, just the skill tracker's matches against saved policy versions (see RunRating())
 	int rateRounds = (int)opt.Int("rate-rounds");
+	cfg.skillTracker.anchored = opt.Has("rate-anchored");
+	if (cfg.skillTracker.anchored && (rateRounds <= 0 || opt.Str("rate-versions").empty()))
+		RG_ERR_CLOSE("--rate-anchored needs --rate-rounds and --rate-versions");
 	if (rateRounds > 0) {
 		cfg.skillTracker.enabled = true;
 		cfg.trainAgainstOldVersions = false;
@@ -1321,6 +1348,9 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 		j["modes"] = ModeNames(g_TrainTeamSizes);
 		j["device"] = opt.Str("device");
 		j["games"] = cfg.numGames;
+		j["mode_balance"] = balance;
+		j["fixed_rollout"] = cfg.ppo.fixedRollout;
+		j["lean_metrics"] = g_LeanMetrics;
 		j["ts_per_itr"] = cfg.ppo.tsPerItr;
 		j["batch_size"] = cfg.ppo.batchSize;
 		j["epochs"] = cfg.ppo.epochs;
@@ -1369,6 +1399,7 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 	}
 
 	g_MaxTimesteps = (uint64_t)RS_MAX(opt.Int("max-timesteps"), (int64_t)0);
+	cfg.maxTimesteps = g_MaxTimesteps;
 	g_MaxTrainSeconds = opt.Num("max-minutes") * 60;
 
 	RG_LOG("Training settings:");
