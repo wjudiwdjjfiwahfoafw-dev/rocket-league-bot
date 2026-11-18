@@ -159,9 +159,10 @@
   "pending": {
     "stage": 5,
     "start_steps": 3137998278,
-    "seconds": 1366.7586963089998,
+    "seconds": 0,
     "trained": false
   },
   "status": "paused",
-  "wandb_dir": "results/ranking_3043214022/campaign/wandb/offline-run-20261118_114932-zh40m7zp"
+  "wandb_dir": "results/ranking_3043214022/campaign/wandb/offline-run-20261118_114932-zh40m7zp",
+  "target_ranking": 1700.0
 }
