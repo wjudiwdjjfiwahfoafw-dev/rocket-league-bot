@@ -338,7 +338,8 @@ void GGL::PolicyVersionManager::RunSkillMatches(PPOLearner* ppo, Report& report)
 		double avgSum = 0;
 		for (auto& pair : skill.curRatings.data)
 			avgSum += pair.second;
-		report["Rating/Average"] = (float)(avgSum / skill.curRatings.data.size());
+		// The one number to optimize: the mean over all trained modes (1v1, 2v2, and 3v3 once it is trained)
+		report["Rating/Ranking"] = (float)(avgSum / skill.curRatings.data.size());
 	}
 
 	// What the rating of this iteration is based on
@@ -421,7 +422,8 @@ void GGL::PolicyVersionManager::RunSkillSession(PPOLearner* ppo, Report& report)
 		if (!ratingSeries.empty()) {
 			float overallAvg = (float)(modeAvgSum / ratingSeries.size());
 			RG_LOG(" > Rating session result: Average = " << overallAvg);
-			report["Rating/Average"] = overallAvg;
+			// The one number to optimize: the mean over all trained modes (1v1, 2v2, and 3v3 once it is trained)
+			report["Rating/Ranking"] = overallAvg;
 		}
 
 		report["Skill Matches/Rounds"] = roundsPlayed;

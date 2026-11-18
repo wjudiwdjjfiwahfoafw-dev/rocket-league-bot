@@ -8,7 +8,7 @@ also `Rating/2v2`. Every run of this work reports them to Weights & Biases.
 
 <!-- SUMMARY -->
 - **The 1v1 + 2v2 run is in progress.** Its state is in `results/elo/run_1v1_2v2/progress.md`, which is rewritten
-  every 10 minutes, and its newest checkpoint is always in `checkpoints_1v1_2v2/`.
+  every 10 minutes, and its newest checkpoint is always in `checkpoints/`.
 <!-- /SUMMARY -->
 - **The 12-hour 1v1 run took `Rating/1v1` from 885 to 1264.** The bot at its end beat the bot from its start 657:179
   in direct games. It trained 786 million timesteps (1.17 billion in total) at 18,200 per second, up from 13,600.
@@ -670,7 +670,7 @@ The run ended at 1,165,494,176 timesteps. That checkpoint is `checkpoints_1v1/11
 
 ## Adding 2v2
 
-You asked to add 2v2 to the training. One network now trains both modes: `./train_1v1_2v2.sh`, `s-1v1-2v2` in wandb.
+You asked to add 2v2 to the training. One network now trains both modes: `train_1v1_2v2_3v3.sh`, `s-1v1-2v2` in wandb.
 
 **The 1v1 bot was converted back to the full network.** `s-1v1` can't play 2v2: it has no place for a teammate.
 
@@ -691,7 +691,7 @@ Converted, the bot plays 2v2 like four 1v1 players: 201 : 201 goals against itse
 **Two rewards changed, because a team was paid twice for the same thing.** In 1v1 both are exactly the rewards of
 before.
 
-| Reward | In `train_1v1.sh` | In `train_1v1_2v2.sh` |
+| Reward | In `train_1v1.sh` | In `train_1v1_2v2_3v3.sh` |
 |---|---|---|
 | Kickoff: being nearer to the ball than the opponents while it lies on the centre spot | per player, weight 3 | for the team, by its nearest player, weight 3. One player going for the kickoff is enough |
 | Speed towards the ball | every player, weight 4 | weight 4 for the team's nearest player to the ball, weight 1 for its teammate (`VelocityPlayerToBall=1,NearestVelocityToBall=3`) |
@@ -734,7 +734,7 @@ The workspace is limited to 128 MB, and what does not fit is lost. It now holds 
 
 | Folder | Content | Size |
 |---|---|---|
-| `checkpoints_1v1_2v2/` | The bot that is being trained: its newest 2 checkpoints and 10 policy versions | 30 MB |
+| `checkpoints/` | The bot that is being trained: its newest 2 checkpoints and 10 policy versions | 30 MB |
 | `checkpoints_1v1/1165494176` | The 1v1 bot at the end of the 12-hour run (`s-1v1`), without its policy versions | 5 MB |
 | `checkpoints/14102144` | The example bot of the first training run | 6 MB |
 | everything else | Source (10 MB), results of the tests and of the earlier work (12 MB), metrics (8 MB) | 27 MB |
@@ -749,7 +749,7 @@ The workspace is limited to 128 MB, and what does not fit is lost. It now holds 
 - **Moved out of the workspace to make room:** `checkpoints_multi/` (57 MB, the `l` network of `ARCHITECTURE.md`
   after its 16 million timesteps, which the 1v1 bot beat 424 : 15), the checkpoints inside `results/entropy_test/`
   and `results/policy_snapshots/` (13 MB), and the policy versions of the 1v1-only bot (12 MB, they exist
-  converted in `checkpoints_1v1_2v2/policy_versions`). They are in `/opt/deps/archive` of this sandbox, which is
+  converted in `checkpoints/policy_versions`). They are in `/opt/deps/archive` of this sandbox, which is
   not saved. `./train_multi.sh` trains the `l` network again.
 
 ## Continuing
@@ -759,14 +759,14 @@ The workspace is limited to 128 MB, and what does not fit is lost. It now holds 
     export WANDB_API_KEY=...                 # only for wandb
     ./train_1v1_2v2.sh --max-minutes 240 --wandb --wandb-project rocket-league-ggl
 
-`train_1v1_2v2.sh` holds the settings of the 1v1 + 2v2 run. It continues from the newest checkpoint in
-`checkpoints_1v1_2v2`, with the ratings it has and in the wandb run `s-1v1-2v2`. Without `--wandb` the metrics only
+`train_1v1_2v2_3v3.sh` holds the settings of the 1v1 + 2v2 run. It continues from the newest checkpoint in
+`checkpoints`, with the ratings it has and in the wandb run `s-1v1-2v2`. Without `--wandb` the metrics only
 go to `metrics_1v1_2v2/*.jsonl`.
 
     tools/show_rating.py metrics_1v1_2v2 --mode 2v2 --hours --plot rating.png    # a rating over the run time
 
 `train_1v1.sh` is the 1v1-only training of the 12-hour run (`s-1v1`, mirrored view). To go on with 1v1 alone, give
-it the 1v1 + 2v2 bot: copy `checkpoints_1v1_2v2` to a new folder and pass it with `--checkpoints`. The 1v1-only
+it the 1v1 + 2v2 bot: copy `checkpoints` to a new folder and pass it with `--checkpoints`. The 1v1-only
 network loads the files of the full one and plays 1v1 the same. What the bot has learned about teammates is lost
 on that way, and `--expand-1v1` does not bring it back.
 
@@ -804,9 +804,9 @@ Notes:
 
 | Path | Content |
 |---|---|
-| `train_1v1_2v2.sh` | The 1v1 + 2v2 training with rating sessions (the settings of the run that is going) |
+| `train_1v1_2v2_3v3.sh` | The 1v1 + 2v2 training with rating sessions (the settings of the run that is going) |
 | `train_1v1.sh` | The 1v1-only training (the settings of the 12-hour run) |
-| `checkpoints_1v1_2v2/` | The bot: its newest 2 checkpoints and `policy_versions/` with its 10 saved versions |
+| `checkpoints/` | The bot: its newest 2 checkpoints and `policy_versions/` with its 10 saved versions |
 | `checkpoints_1v1/1165494176` | The 1v1 bot at the end of the 12-hour run, in the 1v1-only form |
 | `metrics_1v1_2v2/` | Metrics of the 1v1 + 2v2 run: every 40th iteration and every iteration with a rating |
 | `metrics_1v1/history.jsonl` | Metrics of the bot's whole 1v1 training in one file, thinned: every 16th iteration up to 95 million timesteps, every 20th up to 379.5 million, every 60th after, and every iteration with a rating |

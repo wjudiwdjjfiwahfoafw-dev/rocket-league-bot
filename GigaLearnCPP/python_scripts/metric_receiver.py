@@ -163,7 +163,15 @@ def add_metrics(metrics):
 			jsonl_file.flush()
 
 	if wandb_run is not None:
-		wandb_run.log(metrics)
+		# Sending every iteration costs CPU on a 2-core machine, which slows the simulation.
+		# GGL_WANDB_EVERY=N sends every Nth iteration; ratings and their iterations are always sent.
+		add_metrics._wandb_count = getattr(add_metrics, "_wandb_count", 0) + 1
+		try:
+			wandb_every = max(1, int(os.environ.get("GGL_WANDB_EVERY", "10")))
+		except ValueError:
+			wandb_every = 10
+		if (add_metrics._wandb_count - 1) % wandb_every == 0 or any(str(k).startswith("Rating/") for k in metrics):
+			wandb_run.log(metrics)
 
 
 # Called by the learner when the run is over

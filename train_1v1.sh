@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Trains the bot for 1v1 on a CPU and rates it with GigaLearn's skill tracker (the 12-hour run of ELO_REPORT.md).
-# For 1v1 and 2v2 with one bot, see train_1v1_2v2.sh.
+# For 1v1 and 2v2 with one bot, see train_1v1_2v2_3v3.sh.
 #
 # Usage:   ./train_1v1.sh [extra GigaLearnBot options]
 # Example: ./train_1v1.sh --max-minutes 120                     # train for 2 hours, then save and stop

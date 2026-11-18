@@ -400,17 +400,16 @@ void SetModelConfig(PPOLearnerConfig& ppo) {
 }
 
 // Sets the game modes to train in (--modes).
-// The modes take turns in a pattern that gives every mode the same number of players, and with that the same number
-//	of timesteps: for 1v1, 2v2 and 3v3 that is 6, 3 and 2 of every 11 games.
+// The modes take turns in a pattern that gives every mode the same number of games: for 1v1, 2v2 and 3v3 that is
+// one game of each in every cycle of three (e.g. --games 45 gives 15 games of each mode).
 void SetTrainModes(const std::vector<int>& teamSizes) {
 	g_TrainTeamSizes = teamSizes;
 	g_TeamSizePattern.clear();
 
-	constexpr int PLAYERS_PER_MODE = 6; // Divisible by all team sizes
 	std::vector<int> gamesOfMode = {}, placedOfMode = {};
 	int patternSize = 0;
 	for (int teamSize : teamSizes) {
-		gamesOfMode.push_back(PLAYERS_PER_MODE / teamSize);
+		gamesOfMode.push_back(1);
 		placedOfMode.push_back(0);
 		patternSize += gamesOfMode.back();
 	}
@@ -1151,7 +1150,7 @@ int RunRating(Learner* learner, const Options& opt, int numRounds) {
 		for (auto& pair : ratingSeries)
 			avgAll += j["ratings"][pair.first]["average"].get<double>();
 		avgAll /= ratingSeries.size();
-		RG_LOG("\tRating/Average: " << avgAll);
+		RG_LOG("\tRating/Ranking: " << avgAll);
 		j["ratings"]["Average"] = { { "average", avgAll } };
 	}
 
