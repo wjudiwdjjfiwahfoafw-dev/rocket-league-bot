@@ -101,8 +101,10 @@ def backup(campaign, destination, branch, status):
         steps = int(latest.name)
         history = [e for e in state['history'] if e['steps'] <= steps]
         if state.get('pending') and state['pending']['start_steps'] <= steps:
-            state['pending']['seconds'] = 0  # conservative: never claim unbacked training time
-            state['pending']['trained'] = False
+            if state['status'] != 'paused':
+                state['pending']['seconds'] = 0  # crash snapshot: don't claim unbacked trainer time
+                state['pending']['trained'] = False
+            # A graceful pause has already saved this exact boundary and elapsed budget.
         state['history'] = history
         state['status'] = 'paused' if state['status'] != 'complete' else 'complete'
         (staging / 'state.json').write_text(json.dumps(state, indent=2) + '\n')

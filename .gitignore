@@ -64,3 +64,8 @@ __pycache__/
 /results/**/wandb/latest-run
 /results/**/wandb/debug*.log
 /results/**/wandb/offline-run-*/logs/
+
+# Writable campaign restored from the canonical committed training-backup/.
+/results/ranking_3043214022/campaign/
+# Local-only W&B segments/exports; durable numeric metrics live in training-backup/.
+/results/**/wandb/

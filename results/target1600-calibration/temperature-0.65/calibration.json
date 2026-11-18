@@ -1,7 +1,0 @@
-{
-  "source": "checkpoints/3035220582",
-  "temperature": 0.65,
-  "source_policy_sha256": "3bbf0912e900559951be2a5f08674c3306630eed5b25e11b4085cc14296435e3",
-  "policy_sha256": "c492815f9eda3cdf14beb2eda5798294f427652c950486833227885f7f3b1cd0",
-  "optimizer_note": "Original optimizer archives retained; transformed weights have not been trained."
-}
