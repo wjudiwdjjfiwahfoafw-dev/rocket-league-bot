@@ -102,3 +102,16 @@ Native `GigaLearnTests` and `GigaLearnMultiModeTests` cover GAE math, observatio
 The learned policy is the uncalibrated model weights. Rendering's deterministic flag is not used in training. PPO sampling stays stochastic at temperature 1; the resume helper loads only the native PPO snapshot. The historical 1600+ calibrated sampled benchmark is not evidence that the learned policy improved and is unchanged under deterministic argmax. Keep any lower-temperature opponents separate from learner state and do not use their modified archives to warm-start the learner.
 
 Headless render regression: `python3 tools/test_native_render.py` captures real RocketSimVis UDP frames and checks all modes, a subset, one selected mode, and absence of training/saves. Native tests cover masked argmax, unchanged stochastic sampling and single-arena buffer resizing.
+
+## Current experiment: 1700 from uncalibrated learned weights
+
+See [WEIGHTS_1700.md](WEIGHTS_1700.md) for the predeclared sequence and exclusions.
+`python3 tools/pursue_weight_target.py` resumes the existing budget, then runs a
+bounded goal-focused follow-up if necessary. Do not start a second copy while it
+is active. New ranked results require sampled temperature-1 execution metadata
+and matching inference-weight hashes. Legacy score files without fingerprints
+are remeasured rather than trusted as cache hits. `--reference-pool` supports a
+fresh campaign from a selected PPO checkpoint without changing the frozen pool;
+`--audit-seed` predeclares its held-out seed. `--target-ranking 1700` updates only
+reporting, not the immutable training settings. The resume helper reconstructs
+the saved recipe's overrides and audit seed, including follow-up experiments.

@@ -1137,7 +1137,8 @@ int RunRating(Learner* learner, const Options& opt, int numRounds) {
 	j["real_seconds"] = realSeconds;
 	j["settings"] = {
 		{ "arenas", tracker.numArenas }, { "sim_time", tracker.simTime }, { "max_sim_time", tracker.maxSimTime },
-		{ "rating_inc", tracker.ratingInc }, { "initial_rating", tracker.initialRating }, { "deterministic", tracker.deterministic }
+		{ "rating_inc", tracker.ratingInc }, { "initial_rating", tracker.initialRating }, { "deterministic", tracker.deterministic },
+		{ "policy_temperature", learner->config.ppo.policyTemperature }
 	};
 
 	RG_LOG(RG_DIVIDER);

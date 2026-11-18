@@ -66,7 +66,7 @@ def snapshot(campaign):
             if line.endswith('\n') and line.strip():
                 row = json.loads(line)
                 rows[int(row['Total Timesteps'])] = row
-    return {'state': state, 'goal': assess_goal(state), 'calibrations': calibration_results(), 'rows': [rows[k] for k in sorted(rows)]}
+    return {'state': state, 'goal': assess_goal(state, state.get('target_ranking', 1600.0)), 'calibrations': calibration_results(), 'rows': [rows[k] for k in sorted(rows)]}
 
 
 def backup(campaign, destination, branch, status):
