@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+import resume_training
 from resume_training import restore, verify
 
 
@@ -35,6 +37,27 @@ class RestoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 restore(snapshot, work)
             self.assertFalse(work.exists())
+
+    def test_restore_only_uses_saved_campaign_path_without_starting_training(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / 'snapshot'
+            self.make_snapshot(snapshot)
+            state = json.loads((snapshot / 'state.json').read_text())
+            state['working_directory'] = 'results/weights1700/campaign'
+            payload = json.dumps(state).encode()
+            (snapshot / 'state.json').write_bytes(payload)
+            (snapshot / 'manifest.json').write_text(json.dumps({'checkpoint': 123,
+                'sha256': {'state.json': hashlib.sha256(payload).hexdigest()}}))
+            with patch.object(resume_training, 'ROOT', root), patch.object(resume_training, 'SNAPSHOT', snapshot), \
+                 patch.object(resume_training, 'WORK', root / 'results/old'), \
+                 patch.object(resume_training, 'restore', wraps=lambda **kw: restore(snapshot=snapshot, **kw)), \
+                 patch.object(resume_training.subprocess, 'run') as launch, \
+                 patch('sys.argv', ['resume_training.py', '--restore-only']):
+                resume_training.main()
+            self.assertTrue((root / 'results/weights1700/campaign/state.json').exists())
+            self.assertFalse((root / 'results/old').exists())
+            launch.assert_not_called()
 
     def test_traversal_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
