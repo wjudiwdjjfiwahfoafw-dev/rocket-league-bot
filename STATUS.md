@@ -1,5 +1,9 @@
 # Training status
 
+## 1600 combined Elo target: achieved
+
+The calibrated original policy passed **1608.18 screen / 1662.50 confirmation / 1659.84 held-out audit** against the unchanged frozen pool. This is an action-distribution calibration gain, distinct from PPO training. Model files, SHA256 manifest, full evaluations and caveats: [TARGET_1600.md](TARGET_1600.md). PPO separately promoted `3137998278` at **1570.05 / 1576.24**; its campaign is still running.
+
 ## 2026-11-18: three-hour ranked campaign
 
 The campaign starts from `3043214022`. Its objective is **Rating/Ranking**, the unweighted mean of the 1v1, 2v2 and 3v3 Elos against a frozen five-opponent pool. [Live campaign state](results/ranking_3043214022/campaign/state.json) · [Protocol, throughput benchmarks and resume command](RANKED_TRAINING.md).
