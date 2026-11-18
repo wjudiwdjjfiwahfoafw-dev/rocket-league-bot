@@ -46,6 +46,7 @@ namespace RLGC {
 
 		void Resize(std::vector<Arena*>& arenas) {
 			numPlayers = 0;
+			arenaPlayerStartIdx.clear();
 			for (int i = 0; i < arenas.size(); i++) {
 				arenaPlayerStartIdx.push_back(numPlayers);
 				numPlayers += arenas[i]->_cars.size();
@@ -110,6 +111,8 @@ namespace RLGC {
 		void StepFirstHalf(bool async);
 		void StepSecondHalf(const IList& actionIndices, bool async);
 		void Sync() { g_ThreadPool.WaitUntilDone(); }
+		// Viewing only: resize the sole arena between episodes, rebuilding all player buffers.
+		void ResetSingleArenaWithTeamSize(int teamSize);
 		void ResetArena(int index);
 		void Reset();
 	};

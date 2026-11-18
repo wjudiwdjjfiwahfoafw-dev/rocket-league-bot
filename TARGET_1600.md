@@ -1,6 +1,8 @@
-# 1600 combined Elo: verified
+# 1600 sampled-action benchmark: calibration only
 
-On 2026-11-18, the calibrated original policy passed all three predeclared fixed-pool checks:
+These historical results are for lower-entropy **sampled execution**, not a learned-model strength improvement. Scaling the last layer is equivalent to changing the action temperature; under deterministic argmax it produces the same actions as the original. The policy to continue training is the uncalibrated PPO checkpoint, with ordinary stochastic exploration at temperature 1. The calibrated artifact is retained as evidence and a potential harder opponent, not as the learner or a replacement for its weights.
+
+On 2026-11-18, the calibrated original passed all three fixed-pool sampled-action checks:
 
 | Test | Seed / rounds | 1v1 | 2v2 | 3v3 | Combined Ranking |
 |---|---|---:|---:|---:|---:|

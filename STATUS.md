@@ -13,9 +13,9 @@ Checkpoint **3137998278** passed both fixed-pool tests and was promoted:
 
 The campaign parent's matching rankings were 1543.18 / 1555.39. The mean matched improvement is **+23.86 Elo**. There is no completed PPO held-out audit yet. Latest checkpoint does not mean strongest checkpoint.
 
-## Verified 1600+ policy
+## Historical calibrated sampled-action benchmark
 
-The separately calibrated original policy passed **1608.18 screen / 1662.50 confirmation / 1659.84 held-out audit** against the unchanged frozen pool. This is an action-distribution calibration gain, not a claim that PPO training alone reached 1600. The policy, hashes and complete evaluations remain in the current tree. See [TARGET_1600.md](TARGET_1600.md).
+The separately calibrated original policy passed **1608.18 screen / 1662.50 confirmation / 1659.84 held-out audit** against the unchanged frozen pool. This is a sampled action-distribution effect, **not a learned-model improvement**. It has no effect on deterministic argmax play. Continued training uses the original PPO weights at temperature 1, not this calibrated artifact. The policy, hashes and complete evaluations remain in the current tree. See [TARGET_1600.md](TARGET_1600.md).
 
 ## Continue later
 

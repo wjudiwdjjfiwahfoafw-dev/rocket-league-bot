@@ -322,6 +322,15 @@ static BotSpec g_Bot = BOT_PRESETS[0];
 // Team sizes of the game modes the bot is trained in, and the team size of each game (see SetTrainModes())
 static std::vector<int> g_TrainTeamSizes = { 1 };
 static std::vector<int> g_TeamSizePattern = { 1 };
+static bool g_RenderOnly = false;
+static std::mt19937 g_RenderModeRng;
+
+static int ChooseRenderTeamSize() {
+	std::uniform_int_distribution<size_t> choose(0, g_TrainTeamSizes.size() - 1);
+	int size = g_TrainTeamSizes[choose(g_RenderModeRng)];
+	RG_LOG("Render episode: " << size << "v" << size << " (one arena, deterministic argmax)");
+	return size;
+}
 
 // "s", "m-flat", ... -> BotSpec. The suffix "-flat" removes the slot encoder (for comparisons)
 BotSpec FindBotPreset(std::string name) {
@@ -469,7 +478,7 @@ EnvCreateResult EnvCreateFunc(int index) {
 	result.terminalConditions = terminalConditions;
 	result.rewards = rewards;
 
-	result.arena = MakeArena(GetTeamSizeOfGame(index));
+	result.arena = MakeArena(g_RenderOnly ? ChooseRenderTeamSize() : GetTeamSizeOfGame(index));
 
 	return result;
 }
@@ -566,7 +575,7 @@ static const OptionDef OPTION_DEFS[] = {
 	{ "rate-anchored", NULL, "With --rate-rounds and --rate-versions: fix opponent Elo, initialize each mode at its pool mean and cycle opponents on both colors. Rounds must be a multiple of twice the pool size" },
 	{ "rate-out", "", "With --rate-rounds: also write the result to this JSON file" },
 	{ "expand-1v1", "", "Don't train: copy the newest checkpoint of a 1v1-only model (s-1v1) from this folder to --checkpoints as a checkpoint of the full model (s), together with its policy versions. The copy plays 1v1 exactly as before, and starts 2v2 and 3v3 with what it does in 1v1, so it can be trained in more modes" },
-	{ "render", NULL, "Don't train, send the games of the newest checkpoint to RocketSimVis instead" },
+	{ "render", NULL, "Don't train: one arena, deterministic argmax actions; randomly choose from --modes at every episode reset" },
 
 	// Evaluation
 	{ "eval", "", "Don't train, evaluate this checkpoint instead (a checkpoint folder, or a folder of checkpoints)" },
@@ -1243,7 +1252,7 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 	cfg.actionDelay = ACTION_DELAY;
 
 	// Play around with this to see what the optimal is for your machine, more games will consume more RAM
-	cfg.numGames = (int)opt.Int("games");
+	cfg.numGames = opt.Has("render") ? 1 : (int)opt.Int("games");
 
 	// The random seed can have a strong effect on the outcome of a run
 	cfg.randomSeed = opt.Int("seed");
@@ -1288,6 +1297,12 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 	cfg.metricsGroupName = OptionOrEnv(opt.Str("wandb-group"), "WANDB_RUN_GROUP", "unnamed-runs");
 	cfg.metricsRunName = opt.Str("run-name");
 	cfg.renderMode = opt.Has("render");
+	g_RenderOnly = cfg.renderMode;
+	if (cfg.renderMode) {
+		cfg.ppo.deterministic = true;
+		cfg.renderChooseTeamSize = ChooseRenderTeamSize;
+		g_RenderModeRng.seed(static_cast<uint32_t>(cfg.randomSeed));
+	}
 
 	// GigaLearn's policy versions: copies of the policy, saved every tsPerVersion timesteps into <checkpoints>/policy_versions.
 	// The skill tracker lets the current policy play against them and keeps an Elo rating from the goals,
@@ -1412,7 +1427,11 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 				numGames += (GetTeamSizeOfGame(i) == teamSize);
 			modeStr << (modeStr.str().empty() ? "" : ", ") << numGames << " x " << ModeName(teamSize) << " (" << (numGames * teamSize * 2) << " players)";
 		}
-		RG_LOG("\tGame modes: " << modeStr.str());
+		if (cfg.renderMode) {
+			RG_LOG("\tRender modes: " << ModeNames(g_TrainTeamSizes) << "; one arena, random mode each episode, deterministic argmax");
+		} else {
+			RG_LOG("\tGame modes: " << modeStr.str());
+		}
 	}
 	RG_LOG("\tGames: " << cfg.numGames << ", timesteps per iteration: " << cfg.ppo.tsPerItr << ", batch size: " << cfg.ppo.batchSize << ", epochs: " << cfg.ppo.epochs);
 	RG_LOG("\tLearning rate: " << cfg.ppo.policyLR << ", entropy scale: " << cfg.ppo.entropyScale << ", gamma: " << cfg.ppo.gaeGamma);

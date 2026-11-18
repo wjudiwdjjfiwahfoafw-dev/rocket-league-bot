@@ -2,6 +2,7 @@
 #include <RLGymCPP/BasicTypes/Lists.h>
 #include "PPO/PPOLearnerConfig.h"
 
+#include <functional>
 #include <map>
 #include <string>
 #include "SkillTrackerConfig.h"
@@ -21,6 +22,8 @@ namespace GGL {
 		int actionDelay = 7;
 
 		bool renderMode = false;
+		// Optional episode-boundary selector for the ONE render arena; never used in training.
+		std::function<int()> renderChooseTeamSize = nullptr;
 		// If renderMode, this is the scaling of time for the game
 		// 1.0 = Run the game at real time
 		// 2.0 = Run the game twice as fast as real time

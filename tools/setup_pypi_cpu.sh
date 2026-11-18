@@ -67,19 +67,20 @@ if [ ! -f "$include/Python.h" ] || [ ! -f "$library" ]; then
         exit 1
     fi
     include="$cache/python/include"; library="$cache/python/lib/libpython3.11.so"
-    if [ ! -f "$include/pyconfig.h" ] || [ ! -f "$library" ]; then
+    if [ ! -f "$include/pyconfig.h" ] || [ ! -f "$library" ] || [ ! -f "$cache/python/render-stdlib-v1" ]; then
         mkdir -p "$cache/cpython" "$include" "$(dirname "$library")"
         (
             cd "$cache/cpython"
             curl -fsSL -o source.tgz https://codeload.github.com/python/cpython/tar.gz/refs/tags/v3.11.2
             echo '5ce2b6e8363d3a170e6fc2c5b7ef26f2c2565d4c4183ff092d3d36b7727499e8  source.tgz' | sha256sum -c -
             tar -xzf source.tgz --strip-components=1
-            # Match the system stdlib, including its built-in math module for the embedded metrics receiver.
-            printf '*static*\nmath mathmodule.c -lm\n' > Modules/Setup.local
+            # Match built-ins needed by metrics and the UDP render receiver (Debian builds these into its executable).
+            printf '*static*\nmath mathmodule.c -lm\n_socket socketmodule.c\nselect selectmodule.c\narray arraymodule.c\n_struct _struct.c\n' > Modules/Setup.local
             ./configure --prefix="$("$PYTHON" -c 'import sys; print(sys.base_prefix)')" --enable-shared --without-ensurepip CFLAGS='-O1 -g0'
             make -j "${JOBS:-2}" libpython3.11.so
             cp -a Include/. "$include/"; cp pyconfig.h "$include/"
             cp -a libpython3.11.so* "$(dirname "$library")/"
+            touch "$cache/python/render-stdlib-v1"
         )
     fi
 fi

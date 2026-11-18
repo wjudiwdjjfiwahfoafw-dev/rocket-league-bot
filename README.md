@@ -6,7 +6,7 @@ CPU training for one small (`s`) policy across **1v1, 2v2 and 3v3**, using the b
 
 - **Latest resumable checkpoint:** `3155997126`, saved during stage 5.
 - **Selected PPO model:** `3137998278`, screen / confirmation Ranking **1570.05 / 1576.24**.
-- **Verified 1600+ policy:** calibrated original, **1608.18 screen / 1662.50 confirmation / 1659.84 held-out audit**. See [model and evidence](TARGET_1600.md). Calibration is distinct from PPO training progress.
+- **Calibrated sampled-action benchmark (not a learned-model improvement):** original at temperature 0.4, **1608.18 screen / 1662.50 confirmation / 1659.84 held-out audit**. See [model and evidence](TARGET_1600.md). Calibration is distinct from PPO training progress.
 - **Canonical paused campaign:** [`training-backup/`](training-backup/), including optimizer state, opponent pools, evaluations, metrics and SHA256 manifest. This snapshot is committed and pushed to GitHub.
 
 ## Build and explicitly resume
@@ -36,3 +36,13 @@ See [training and recovery guide](RANKED_TRAINING.md) for requirements, direct c
 - `tools/`: current training, evaluation, monitoring, recovery, setup and regression tests.
 
 Older checkpoints, superseded 1v1/two-mode scripts, reports, trial outputs and benchmark builds were removed from the current tree. They remain in Git history; no history was rewritten.
+
+## Deterministic viewing
+
+```bash
+build/GigaLearnBot --render --checkpoints training-backup/best --device cpu --modes 1v1,2v2,3v3
+```
+
+`--render` uses exactly one arena even if `--games` is supplied. At each goal/no-touch episode reset it independently samples a mode uniformly from `--modes` (repeats are possible). Actions are masked argmax, never sampled. RocketSimVis receives UDP frames; viewing does not train or save.
+
+**Training remains stochastic at temperature 1.** Resume uses the uncalibrated PPO weights in `training-backup/learner/`, not the temperature-scaled artifact. Calibrated policies may be used as separately identified opponents; their sampled-action Elo is not a new learned-model rating. Positive temperature scaling does not change deterministic argmax actions.

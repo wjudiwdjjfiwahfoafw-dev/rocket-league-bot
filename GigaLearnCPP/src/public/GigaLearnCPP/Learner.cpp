@@ -95,6 +95,11 @@ static int FindBestTorchThreadCount() {
 GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbackFn stepCallback) :
 	envCreateFn(envCreateFn), config(config), stepCallback(stepCallback)
 {
+	// Rendering must never sample actions, even for library callers bypassing the CLI.
+	if (config.renderMode) {
+		config.ppo.deterministic = true;
+		this->config.ppo.deterministic = true;
+	}
 	TuneMemoryAllocator();
 
 	pybind11::initialize_interpreter();
@@ -697,7 +702,7 @@ void GGL::Learner::Start() {
 			for (int i = 0; i < numPlayers; i++)
 				newPlayerIndices.push_back(i);
 
-			if (config.trainAgainstOldVersions) {
+			if (!render && config.trainAgainstOldVersions) {
 				RG_ASSERT(config.trainAgainstOldChance >= 0 && config.trainAgainstOldChance <= 1);
 				bool shouldTrainAgainstOld =
 					(RocketSim::Math::RandFloat() < config.trainAgainstOldChance)
@@ -765,7 +770,12 @@ void GGL::Learner::Start() {
 
 					for (int step = 0; combinedTraj.Length() < config.ppo.tsPerItr || render; step++, stepsCollected += numRealPlayers) {
 						Timer stepTimer = {};
-						envSet->Reset();
+						if (render && envSet->state.terminals[0] && config.renderChooseTeamSize) {
+							envSet->ResetSingleArenaWithTeamSize(config.renderChooseTeamSize());
+							numPlayers = numRealPlayers = envSet->state.numPlayers;
+						} else {
+							envSet->Reset();
+						}
 						envStepTime += stepTimer.Elapsed();
 
 						// Start simulating the action delay right away (it only depends on the previous actions).

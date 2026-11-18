@@ -94,3 +94,11 @@ python3 tools/test_native_rollout.py  # short real-model test, after building
 ```
 
 Native `GigaLearnTests` and `GigaLearnMultiModeTests` cover GAE math, observations and joint inference. The Python tests exercise selection, budget/recovery, streaming, target verification and snapshot restoration.
+
+## Render and exploration semantics
+
+`--render` overrides arena count to one and action selection to masked argmax. The initial episode and every episode after a goal/no-touch termination sample uniformly from the selected `--modes`; consecutive repeats are allowed. Player observations, masks, rewards and state buffers are rebuilt when the single arena changes team size. Viewing does not train, create policy-version arenas, or save checkpoints.
+
+The learned policy is the uncalibrated model weights. Rendering's deterministic flag is not used in training. PPO sampling stays stochastic at temperature 1; the resume helper loads only the native PPO snapshot. The historical 1600+ calibrated sampled benchmark is not evidence that the learned policy improved and is unchanged under deterministic argmax. Keep any lower-temperature opponents separate from learner state and do not use their modified archives to warm-start the learner.
+
+Headless render regression: `python3 tools/test_native_render.py` captures real RocketSimVis UDP frames and checks all modes, a subset, one selected mode, and absence of training/saves. Native tests cover masked argmax, unchanged stochastic sampling and single-arena buffer resizing.
