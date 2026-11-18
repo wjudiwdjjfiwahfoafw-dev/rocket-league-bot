@@ -163,6 +163,18 @@ def campaign(args):
                   '--ts-per-itr', '48384', '--batch-size', '12096',
                   '--fixed-rollout', '--lean-metrics', '--minibatch-size', str(args.minibatch),
                   '--lr', '1e-4', '--skill-minutes', '15', '--ts-per-save', '5m', '--keep-checkpoints', '2']
+    # Explicit recipe overrides make follow-up trials reproducible without editing presets.
+    overrides = [('lr', '--lr'), ('entropy_scale', '--entropy-scale'),
+                 ('random_state_prob', '--random-state-prob'), ('train_vs_old', '--train-vs-old')]
+    for attribute, flag in overrides:
+        value = getattr(args, attribute, None)
+        if value is not None:
+            if flag in train_args:
+                train_args[train_args.index(flag) + 1] = str(value)
+            else:
+                train_args.extend([flag, str(value)])
+    if getattr(args, 'rewards', None):
+        train_args.extend(['--rewards', args.rewards])
     config = dict(base=str(base), preset_sha256=hashlib.sha256((REPO / 'train_1v1_2v2_3v3.sh').read_bytes()).hexdigest(),
                   parent_steps=int(base.name), seed=args.seed, screen_seed=SCREEN,
                   confirm_seed=CONFIRM, audit_seed=AUDIT, rounds=args.rounds, train_args=train_args,
@@ -314,7 +326,19 @@ def main():
     parser.add_argument('--monitor', action='store_true', help='Serve all recorded metrics in a browser')
     parser.add_argument('--monitor-port', type=int, default=8080)
     parser.add_argument('--github-backup', action='store_true', help='Automatically commit resumable snapshots and push the current branch (also starts monitor)')
+    parser.add_argument('--lr', type=float, help='Explicit learning-rate override for a fresh experiment')
+    parser.add_argument('--entropy-scale', type=float)
+    parser.add_argument('--random-state-prob', type=float)
+    parser.add_argument('--train-vs-old', type=float)
+    parser.add_argument('--rewards', help='Native comma-separated reward weights for a fresh experiment')
     args = parser.parse_args()
+    if args.lr is not None and not (0 < args.lr <= 0.01):
+        parser.error('--lr must be in (0, 0.01]')
+    if args.entropy_scale is not None and not (0 <= args.entropy_scale <= 1):
+        parser.error('--entropy-scale must be in [0, 1]')
+    for value in (args.random_state_prob, args.train_vs_old):
+        if value is not None and not (0 <= value <= 1):
+            parser.error('Start/opponent probabilities must be in [0, 1]')
     if args.bot.name != 'GigaLearnBot' or min(args.minutes, args.pilot_minutes, args.block_minutes, args.rounds, args.threads, args.minibatch) <= 0:
         parser.error('Budgets, rounds, threads and minibatch must be positive; --bot must name GigaLearnBot')
     if args.out.resolve().is_relative_to(args.base.parent.resolve()):

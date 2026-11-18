@@ -146,3 +146,26 @@ threshold substitutes for this test. This is an experimental target, not a promi
 of improvement or a human Rocket League rank. The existing promotion margin stays
 unchanged. Stage 3 recovered to 1542.59 screen Ranking but did not beat the parent;
 stage 4 continues the current recipe while its effects are measured.
+
+### Reproducible follow-up recipes and policy calibration
+
+Fresh experiments can pass `--lr`, `--entropy-scale`, `--random-state-prob`,
+`--train-vs-old` and `--rewards` to `tools/train_ranked.py`. Overrides become part
+of the immutable campaign configuration; they cannot silently change a resumed
+experiment. Unspecified options preserve the original campaign configuration.
+
+A separate target-1600 experiment tests action-distribution calibration from the
+original `3035220582` checkpoint. `tools/calibrate_policy.cpp` scales the copied
+policy's final linear weight and bias by `1 / temperature`; evaluation still uses
+the identical native masks, sampled actions, seeds, goal Elo and frozen pool.
+The unmodified original is preserved. This is policy post-processing, **not** a
+claim that PPO training improved. Candidate directories include source/output
+SHA256 provenance, full copied model state and measurements. Optimizer archives
+are copied from the source and have not been adapted to the transformed weights.
+
+`tools/test_calibration_candidates.py` screens each temperature on seed 1009/40,
+confirms screen improvements on 2003/80, and audits candidates reaching 1600 on
+both against seed 4001/80. Candidate results do not overwrite the main PPO
+campaign's selected checkpoint or masquerade as its training history. Changing
+temperatures repeatedly based on scores is model selection, so the held-out test
+must remain unused until a candidate passes the declared screen/confirmation.

@@ -66,7 +66,8 @@ def backup(campaign, destination, branch, status):
         raise RuntimeError('Checkpoint incomplete; waiting for next poll')
     if any(time.time_ns() - mtime < 10_000_000_000 for sig in before for _, _, mtime in sig):
         raise RuntimeError('Checkpoint files still settling; waiting for next poll')
-    identity = hashlib.sha256(json.dumps(before).encode()).hexdigest()
+    identity = hashlib.sha256(json.dumps({'files': before, 'history': state['history'],
+        'best': state['best'], 'audit': state.get('audit'), 'status': state['status']}, sort_keys=True).encode()).hexdigest()
     marker = destination / 'manifest.json'
     if marker.exists() and json.loads(marker.read_text())['identity'] == identity:
         status.update(last_success=time.time(), checkpoint=int(latest.name), commit=git('rev-parse', 'HEAD'), error=None)
