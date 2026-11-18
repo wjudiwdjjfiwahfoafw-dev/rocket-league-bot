@@ -174,7 +174,7 @@
   "pending": {
     "stage": 6,
     "start_steps": 3165722310,
-    "seconds": 0,
+    "seconds": 31.55811377200007,
     "trained": false
   },
   "status": "paused",
