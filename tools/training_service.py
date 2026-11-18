@@ -28,6 +28,18 @@ def signature(path):
             for p in sorted(path.rglob('*')) if p.is_file()]
 
 
+def assess_goal(state, target=1600.0):
+    best = state.get('best') or {}
+    screen = (best.get('screen') or {}).get('Ranking')
+    confirm = (best.get('confirm') or {}).get('Ranking')
+    audit = ((state.get('audit') or {}).get(str(best.get('steps'))) or {}).get('Ranking')
+    selection_met = all(v is not None and v >= target for v in (screen, confirm))
+    return {'target': target, 'screen': screen, 'confirmation': confirm, 'audit': audit,
+            'selection_met': selection_met,
+            'verified': selection_met and audit is not None and audit >= target,
+            'screen_gap': max(0.0, target - screen) if screen is not None else None}
+
+
 def snapshot(campaign):
     state = json.loads((campaign / 'state.json').read_text())
     rows = {}
@@ -36,7 +48,7 @@ def snapshot(campaign):
             if line.endswith('\n') and line.strip():
                 row = json.loads(line)
                 rows[int(row['Total Timesteps'])] = row
-    return {'state': state, 'rows': [rows[k] for k in sorted(rows)]}
+    return {'state': state, 'goal': assess_goal(state), 'rows': [rows[k] for k in sorted(rows)]}
 
 
 def backup(campaign, destination, branch, status):

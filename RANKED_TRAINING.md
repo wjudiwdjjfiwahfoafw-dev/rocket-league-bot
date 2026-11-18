@@ -135,3 +135,14 @@ resumed stage may exceed the original time budget but does not skip unbacked
 training. The metrics/evaluations are historical records; resumable weights are
 exactly the manifest checkpoint, not the newest heartbeat timestep. Do not resume
 from `best/` if you intend to continue the latest training trajectory.
+
+## Current strength target: 1600 combined Elo
+
+Target the unweighted three-mode Ranking against the unchanged frozen pool.
+The viewer distinguishes a selected model clearing 1600 on both screen and
+confirmation from a **verified** target, which additionally requires its held-out
+seed-4001 audit to reach 1600. No reward, throughput or moving-pool live-rating
+threshold substitutes for this test. This is an experimental target, not a promise
+of improvement or a human Rocket League rank. The existing promotion margin stays
+unchanged. Stage 3 recovered to 1542.59 screen Ranking but did not beat the parent;
+stage 4 continues the current recipe while its effects are measured.
