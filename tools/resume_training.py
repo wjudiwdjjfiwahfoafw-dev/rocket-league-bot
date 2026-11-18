@@ -70,7 +70,7 @@ def build_resume_command(state, work, without_monitor=False, backup_interval=180
         if flag in train_args:
             cmd.append(flag)
     if not without_monitor:
-        cmd += ['--monitor', '--github-backup', '--backup-interval', str(backup_interval)]
+        cmd += ['--monitor', '--github-backup', '--backup-interval', str(backup_interval), '--wandb-bridge']
     return cmd
 
 

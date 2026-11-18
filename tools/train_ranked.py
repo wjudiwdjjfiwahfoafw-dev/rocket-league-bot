@@ -282,6 +282,11 @@ def campaign(args):
         if args.github_backup:
             service_cmd.append('--backup')
         service = subprocess.Popen(service_cmd)
+    bridge_proc = None
+    if getattr(args, 'wandb_bridge', False):
+        bridge_proc = subprocess.Popen([sys.executable, str(REPO / 'tools/wandb_live_bridge.py'),
+                                        'publish', str(out), '--port', str(args.monitor_port),
+                                        '--interval', '20'])
     streamer = None
     if getattr(args, 'wandb_online', False):
         streamer = subprocess.Popen([sys.executable, str(REPO / 'tools/ranked_wandb.py'),
@@ -373,6 +378,12 @@ def campaign(args):
         if service is not None:
             service.terminate()
             service.wait(timeout=30)
+        if bridge_proc is not None:
+            try:
+                bridge_proc.wait(timeout=25)
+            except subprocess.TimeoutExpired:
+                bridge_proc.terminate()
+                bridge_proc.wait(timeout=15)
         if streamer is not None:
             try:
                 streamer.wait(timeout=15)
@@ -396,6 +407,7 @@ def main():
         parser.add_argument('--' + name, type=int, default=default)
     parser.add_argument('--wandb-offline', action='store_true', help='Write a syncable W&B run in --out; no credential or network needed')
     parser.add_argument('--wandb-online', action='store_true', help='Tail metrics to W&B online in a separate sandbox process; requires W&B credentials/network')
+    parser.add_argument('--wandb-bridge', action='store_true', help='Stream live metrics to W&B via the GitHub Actions cloud relay even when direct W&B egress is blocked')
     parser.add_argument('--monitor', action='store_true', help='Serve all recorded metrics in a browser')
     parser.add_argument('--monitor-port', type=int, default=8080)
     parser.add_argument('--github-backup', action='store_true', help='Automatically commit resumable snapshots and push the current branch every --backup-interval seconds (also starts monitor)')

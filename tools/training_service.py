@@ -68,7 +68,16 @@ def snapshot(campaign):
             if line.endswith('\n') and line.strip():
                 row = json.loads(line)
                 rows[int(row['Total Timesteps'])] = row
-    return {'state': state, 'goal': assess_goal(state, state.get('target_ranking', 1600.0)), 'calibrations': calibration_results(), 'rows': [rows[k] for k in sorted(rows)]}
+    wandb_bridge = None
+    bridge_path = campaign / 'wandb_bridge.json'
+    if bridge_path.is_file():
+        try:
+            wandb_bridge = json.loads(bridge_path.read_text())
+        except (OSError, ValueError):
+            wandb_bridge = None
+    return {'state': state, 'goal': assess_goal(state, state.get('target_ranking', 1600.0)),
+            'calibrations': calibration_results(), 'wandb_bridge': wandb_bridge,
+            'rows': [rows[k] for k in sorted(rows)]}
 
 
 def read_manifest_created(destination):
