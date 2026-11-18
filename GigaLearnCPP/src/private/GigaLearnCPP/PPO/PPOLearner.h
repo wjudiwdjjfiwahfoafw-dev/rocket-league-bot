@@ -74,7 +74,7 @@ namespace GGL {
 		);
 		
 		// If models is null, this->models will be used
-		void InferActions(torch::Tensor obs, torch::Tensor actionMasks, torch::Tensor* outActions, torch::Tensor* outLogProbs, ModelSet* models = NULL);
+		void InferActions(torch::Tensor obs, torch::Tensor actionMasks, torch::Tensor* outActions, torch::Tensor* outLogProbs, ModelSet* models = NULL, torch::Tensor* outValues = nullptr);
 		torch::Tensor InferCritic(torch::Tensor obs);
 
 		// Same as InferCritic(), but the observations (on any device) are moved to our device and evaluated in parts of miniBatchSize.
@@ -89,7 +89,7 @@ namespace GGL {
 			ModelSet& models, 
 			torch::Tensor obs, torch::Tensor actionMasks, 
 			float temperature,
-			bool halfPrec
+			bool halfPrec, torch::Tensor* outValues = nullptr
 		);
 		static void InferActionsFromModels(
 			ModelSet& models, 

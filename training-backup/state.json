@@ -1,0 +1,167 @@
+{
+  "config": {
+    "base": "checkpoints/3043214022",
+    "preset_sha256": "0157781c2e10d1973db968319e90da89755a54c2e68a4ffcfc15bf34b244ced4",
+    "parent_steps": 3043214022,
+    "seed": 20261118,
+    "screen_seed": 1009,
+    "confirm_seed": 2003,
+    "audit_seed": 4001,
+    "rounds": 40,
+    "train_args": [
+      "--threads",
+      "2",
+      "--games",
+      "88",
+      "--mode-balance",
+      "players",
+      "--ts-per-itr",
+      "48384",
+      "--batch-size",
+      "12096",
+      "--fixed-rollout",
+      "--lean-metrics",
+      "--minibatch-size",
+      "1008",
+      "--lr",
+      "1e-4",
+      "--skill-minutes",
+      "15",
+      "--ts-per-save",
+      "5m",
+      "--keep-checkpoints",
+      "2"
+    ],
+    "minutes": [
+      6,
+      30,
+      30,
+      30,
+      30,
+      30,
+      24
+    ],
+    "modes": [
+      "1v1",
+      "2v2",
+      "3v3"
+    ],
+    "protocol": "anchored-v1"
+  },
+  "pool_sha256": "aa048b453da50d8c7c96913692d3e4d70bd141b5247cbd6519fe11589539d81c",
+  "history": [
+    {
+      "stage": 0,
+      "start_steps": 3043214022,
+      "steps": 3043214022,
+      "train_seconds": 0,
+      "steps_per_second": null,
+      "screen": {
+        "1v1": 1422.0273763020834,
+        "2v2": 1637.027608235677,
+        "3v3": 1570.4880249023438,
+        "Ranking": 1543.1810031467014
+      },
+      "confirm": {
+        "1v1": 1460.481201171875,
+        "2v2": 1634.6264221191407,
+        "3v3": 1571.0590291341146,
+        "Ranking": 1555.3888841417102
+      },
+      "promoted": true
+    },
+    {
+      "stage": 1,
+      "start_steps": 3043214022,
+      "steps": 3049891014,
+      "train_seconds": 381.08472531100006,
+      "steps_per_second": 17521.017129592277,
+      "screen": {
+        "1v1": 1458.6545328776042,
+        "2v2": 1613.1482421875,
+        "3v3": 1577.6811279296876,
+        "Ranking": 1549.8279676649308
+      },
+      "confirm": {
+        "1v1": 1474.3331705729167,
+        "2v2": 1611.434952799479,
+        "3v3": 1594.3383850097657,
+        "Ranking": 1560.0355027940539
+      },
+      "promoted": false
+    },
+    {
+      "stage": 2,
+      "start_steps": 3049891014,
+      "steps": 3079308486,
+      "train_seconds": 1827.3930644440002,
+      "steps_per_second": 16098.053873784684,
+      "screen": {
+        "1v1": 1426.387589518229,
+        "2v2": 1612.5988321940104,
+        "3v3": 1495.2902221679688,
+        "Ranking": 1511.4255479600695
+      },
+      "confirm": null,
+      "promoted": false
+    },
+    {
+      "stage": 3,
+      "start_steps": 3079308486,
+      "steps": 3110806470,
+      "train_seconds": 1824.1304323289996,
+      "steps_per_second": 17267.39680549282,
+      "screen": {
+        "1v1": 1446.5163655598958,
+        "2v2": 1636.21796875,
+        "3v3": 1545.0292399088542,
+        "Ranking": 1542.5878580729166
+      },
+      "confirm": null,
+      "promoted": false
+    },
+    {
+      "stage": 4,
+      "start_steps": 3110806470,
+      "steps": 3137998278,
+      "train_seconds": 1835.4057898310002,
+      "steps_per_second": 14815.147773127466,
+      "screen": {
+        "1v1": 1472.7725423177083,
+        "2v2": 1652.346211751302,
+        "3v3": 1585.0304443359375,
+        "Ranking": 1570.0497328016493
+      },
+      "confirm": {
+        "1v1": 1477.456162516276,
+        "2v2": 1656.5174662272136,
+        "3v3": 1594.7556660970051,
+        "Ranking": 1576.243098280165
+      },
+      "promoted": true
+    }
+  ],
+  "best": {
+    "steps": 3137998278,
+    "screen": {
+      "1v1": 1472.7725423177083,
+      "2v2": 1652.346211751302,
+      "3v3": 1585.0304443359375,
+      "Ranking": 1570.0497328016493
+    },
+    "confirm": {
+      "1v1": 1477.456162516276,
+      "2v2": 1656.5174662272136,
+      "3v3": 1594.7556660970051,
+      "Ranking": 1576.243098280165
+    }
+  },
+  "pending": {
+    "stage": 5,
+    "start_steps": 3137998278,
+    "seconds": 1366.7586963089998,
+    "trained": false
+  },
+  "status": "paused",
+  "wandb_dir": "results/ranking_3043214022/campaign/wandb/offline-run-20261118_114932-zh40m7zp"
+}

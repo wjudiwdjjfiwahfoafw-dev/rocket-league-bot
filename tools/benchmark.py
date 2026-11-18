@@ -9,11 +9,11 @@ Usage:
     python3 tools/benchmark.py [options] [-- extra GigaLearnBot options]
 
 Examples:
-    python3 tools/benchmark.py                                   # the settings of train_cpu.sh
+    python3 tools/benchmark.py                                   # the legacy CPU benchmark preset (not the ranked training recipe)
     python3 tools/benchmark.py -- --epochs 1                     # the same with one PPO epoch
     python3 tools/benchmark.py --no-preset -- --device cuda      # the program defaults (the original example) on a GPU
     python3 tools/benchmark.py --fresh --no-preset -- --model l --device cpu --games 44 --ts-per-itr 24k --batch-size 1500
-                                                                 # the 1v1/2v2/3v3 bot with the settings of train_multi.sh
+                                                                 # a fresh large three-mode model
     python3 tools/benchmark.py --env OMP_NUM_THREADS=1 --repeat 3
 
 Options:
@@ -22,7 +22,7 @@ Options:
     --fresh             start from an untrained network instead
     --iterations N      measured iterations, after one warm-up iteration      (default: 10)
     --repeat N          run the whole measurement N times                     (default: 1)
-    --no-preset         don't add the settings of train_cpu.sh
+    --no-preset         don't add the legacy CPU benchmark preset (not the ranked training recipe)
     --env NAME=VALUE    extra environment variable for the run (can be repeated)
     --label TEXT        name shown in the output
     --json FILE         append the result as one JSON line to FILE
@@ -36,7 +36,7 @@ import sys
 import tempfile
 import time
 
-# The settings of train_cpu.sh
+# Legacy CPU benchmark settings; use explicit --no-preset arguments for the ranked recipe
 CPU_PRESET = ["--device", "cpu", "--games", "64", "--ts-per-itr", "24k", "--batch-size", "6k", "--epochs", "2",
               "--lr", "2e-4", "--random-state-prob", "0.5"]
 CPU_PRESET_ENV = {"OMP_WAIT_POLICY": "passive"}
@@ -179,7 +179,7 @@ def main():
         bot_args = CPU_PRESET + bot_args
         env = {**CPU_PRESET_ENV, **env}
 
-    label = opt["label"] or (" ".join(bot_args[len(CPU_PRESET):] if opt["preset"] else bot_args) or "train_cpu.sh settings")
+    label = opt["label"] or (" ".join(bot_args[len(CPU_PRESET):] if opt["preset"] else bot_args) or "legacy CPU benchmark settings")
     results = []
     for run in range(opt["repeat"]):
         r = run_once(opt, bot_args, env)

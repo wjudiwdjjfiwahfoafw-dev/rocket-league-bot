@@ -1,43 +1,19 @@
 #!/usr/bin/env bash
-# Trains one bot for 1v1, 2v2 and 3v3 on a CPU, and rates it in both modes with GigaLearn's skill tracker
-# (the setup of the last part of ELO_REPORT.md).
+# Continues the bundled model in 1v1, 2v2 and 3v3 on a CPU, and rates it in all three modes.
 #
 # Usage:   ./train_1v1_2v2_3v3.sh [extra GigaLearnBot options]
 # Example: ./train_1v1_2v2_3v3.sh --max-minutes 120                     # train for 2 hours, then save and stop
 #          ./train_1v1_2v2_3v3.sh --wandb --wandb-project my-project    # also log to Weights & Biases
 #                                                                   # (needs WANDB_API_KEY or `wandb login`)
 #
-# Running it again continues from the newest checkpoint in ./checkpoints, with the same ratings and wandb run.
-# Stop it at any time with Ctrl+C (or `kill <pid>`): it finishes the current iteration, saves, and exits.
+# Loads the newest numbered checkpoint and the policy_versions pool from ./checkpoints.
+# If you previously trained in checkpoints_1v1_2v2, pass --checkpoints checkpoints_1v1_2v2.
+# For an experiment, copy the checkpoint folder and pass --checkpoints <copy> --new-run.
+# Saves every 2M timesteps, after rating sessions, and on exit; only the newest two checkpoints are kept by default.
+# Ctrl+C finishes the current iteration, saves, and exits.
 #
-# The model and the games:
-#   --model s             the small multi-mode network (537k parameters), the same one for both modes
-#   --modes 1v1,2v2       two 1v1 games for every 2v2 game, so both modes get the same number of timesteps
-#   --mirror left         a car on the right half of the field sees the game mirrored (and its action is mirrored
-#                         back), so the network only ever sees its own car on the left half and learns every
-#                         situation once instead of twice. A checkpoint has to be continued with the view it has
-#
-# Reward phase-out (stage 2): KickoffProximity, BehindBall and FaceBall are off (0); the speed-towards-ball shaping is halved
-# (VelocityPlayerToBall 1->0.5, NearestVelocityToBall 3->1.5). Goal, VelocityBallToGoal, TouchAccel, TeamSpacing stay.
-# The learning settings are those of train_1v1.sh (each one the result of a test judged by the 1v1 rating).
-# Two rewards are different, because with a teammate the 1v1 versions pay both players for the same thing:
-#   KickoffProximity=3    for the whole team, by its nearest player: one player going for the kickoff is enough
-#   VelocityPlayerToBall=1,NearestVelocityToBall=3
-#                         speed towards the ball: 4 for the team's nearest player as before, 1 for its teammate,
-#                         which leaves the teammate free to take a position instead of chasing the ball too.
-#                         In 1v1 both are exactly the rewards of train_1v1.sh
-#
-# The rating (see "How the rating works" in ELO_REPORT.md):
-#   --skill-minutes 10, --skill-rounds 10, --skill-arenas 48
-#                         one session every 10 minutes: 10 rounds of 32 1v1 games and 16 2v2 games at once against
-#                         a saved older version. It gives the metrics "Rating/1v1" and "Rating/2v2"
-#   --ts-per-version 150m, --max-versions 8   versions 150M steps apart, so the opponents differ (25M apart they were the same bot)
-#   --train-vs-old 0.15                        15% of the iterations train against an old version
-#
-# Checkpoints:
-#   --ts-per-save 5m, --keep-checkpoints 2
-#                         a checkpoint every 10 million timesteps and after every rating session, the newest 2 are
-#                         kept. With the 10 policy versions that is about 30 MB in ./checkpoints
+# Each mode gets 15 arenas. The small slot-encoder model and its left-mirrored view match the shipped checkpoint.
+# 15% of iterations train against the saved policy pool rather than pure self-play.
 #
 # BUILD_DIR selects the build folder if you did not use the default ./build.
 set -euo pipefail
@@ -67,7 +43,7 @@ exec "$BOT" \
 	--model s \
 	--modes 1v1,2v2,3v3 \
 	--mirror left \
-	--checkpoints checkpoints_1v1_2v2 \
+	--checkpoints checkpoints \
 	--device cpu \
 	--games 45 \
 	--ts-per-itr 48k \

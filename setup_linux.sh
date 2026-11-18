@@ -15,6 +15,9 @@
 #                  https://download.pytorch.org/libtorch/cu121/libtorch-cxx11-abi-shared-with-deps-2.5.1%2Bcu121.zip
 #                  (2.5 GB, the CUDA build was NOT tested by this script's author) together with a fresh DEPS_DIR
 #   SKIP_APT=1     Don't try to install system packages
+#   PY_INCLUDE / PY_LIBRARY  Development headers/shared library for the selected Python (usually auto-detected)
+#   GGL_CXX_FLAGS  Additional flags for *all* C++ targets (e.g. the ABI of a staged libtorch)
+#   CONFIGURE_ONLY=1  Prepare dependencies and generate the build, but do not compile
 #
 # Tested on Debian 13 with GCC 14.2, CMake 3.31, Python 3.13 and the CPU build of libtorch 2.5.1.
 set -euo pipefail
@@ -85,8 +88,8 @@ if [ -z "$PYTHON" ]; then
 	echo "python3 was not found. Install Python 3 with its development files (Debian/Ubuntu: sudo apt-get install python3-dev)."
 	exit 1
 fi
-PY_INCLUDE="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
-PY_LIBRARY="$("$PYTHON" -c 'import os, sysconfig; print(os.path.join(sysconfig.get_config_var("LIBDIR"), sysconfig.get_config_var("LDLIBRARY")))')"
+PY_INCLUDE="${PY_INCLUDE:-$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_paths()["include"])')}"
+PY_LIBRARY="${PY_LIBRARY:-$("$PYTHON" -c 'import os, sysconfig; print(os.path.join(sysconfig.get_config_var("LIBDIR"), sysconfig.get_config_var("LDLIBRARY")))')}"
 echo "Interpreter: $PYTHON ($("$PYTHON" --version 2>&1))"
 echo "Headers:     $PY_INCLUDE"
 echo "Library:     $PY_LIBRARY"
@@ -136,11 +139,13 @@ step "Configuring (build folder: $BUILD_DIR)"
 cmake -S "$REPO_DIR" -B "$BUILD_DIR" -G Ninja -Wno-dev \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_PREFIX_PATH="$DEPS_DIR/libtorch" \
-	-DCMAKE_CXX_FLAGS="-march=native" \
+	-DCMAKE_CXX_FLAGS="-march=native${GGL_CXX_FLAGS:+ $GGL_CXX_FLAGS}" \
 	-DPython_EXECUTABLE="$PYTHON" \
 	-DPYTHON_EXECUTABLE="$PYTHON" \
-	-DPYTHON_INCLUDE_DIR="$PY_INCLUDE" \
-	-DPYTHON_LIBRARY="$PY_LIBRARY"
+	-DPython_INCLUDE_DIR="$PY_INCLUDE" -DPYTHON_INCLUDE_DIR="$PY_INCLUDE" \
+	-DPython_LIBRARY="$PY_LIBRARY" -DPYTHON_LIBRARY="$PY_LIBRARY"
+
+if [ "${CONFIGURE_ONLY:-0}" = 1 ]; then exit 0; fi
 
 # ---------------------------------------------------------------------------------------------
 step "Memory for compiling"
@@ -190,7 +195,7 @@ cmake --build "$BUILD_DIR" --target GigaLearnBot -j "$JOBS"
 step "Done"
 echo "Executable: $BUILD_DIR/GigaLearnBot"
 echo
-echo "Train on a CPU:      ./train_cpu.sh --max-minutes 30"
+echo "Resume paused CPU training: python3 tools/resume_training.py"
 echo "Train on a GPU:      $BUILD_DIR/GigaLearnBot            (defaults = the original example's settings)"
 echo "Evaluate:            $BUILD_DIR/GigaLearnBot --eval checkpoints"
 echo "All options:         $BUILD_DIR/GigaLearnBot --help"

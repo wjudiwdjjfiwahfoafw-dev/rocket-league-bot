@@ -13,6 +13,7 @@
 //	./build/GigaLearnTests [checkpoint folder]
 
 #include <GigaLearnCPP/PPO/PPOLearner.h>
+#include <GigaLearnCPP/PPO/GAE.h>
 #include <GigaLearnCPP/Util/FusedLayer.h>
 
 #include <torch/nn/utils/convert_parameters.h>
@@ -117,6 +118,17 @@ static void Check(bool condition, const std::string& what) {
 
 int main(int argc, char* argv[]) {
 	torch::manual_seed(123);
+
+	{ // Adjacent trajectories must not borrow each other's bootstrap values (or cross a true goal).
+		auto rewards = torch::tensor({1.f, 2.f, 3.f, 4.f});
+		auto terminals = torch::tensor({(int)RLGC::TerminalType::NOT_TERMINAL, (int)RLGC::TerminalType::TRUNCATED,
+			(int)RLGC::TerminalType::NORMAL, (int)RLGC::TerminalType::TRUNCATED}).to(torch::kInt8);
+		torch::Tensor adv, targets, returns;
+		float clipped;
+		GAE::Compute(rewards, terminals, torch::zeros_like(rewards), torch::tensor({10.f, 40.f}),
+			adv, targets, returns, clipped, 1.f, 1.f);
+		Check(torch::equal(targets, torch::tensor({13.f, 12.f, 3.f, 44.f})), "GAE uses the matching bootstrap at each truncation");
+	}
 
 	PPOLearnerConfig config = {};
 	config.sharedHead.layerSizes = { 256, 256 };

@@ -95,6 +95,11 @@ static int FindBestTorchThreadCount() {
 GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbackFn stepCallback) :
 	envCreateFn(envCreateFn), config(config), stepCallback(stepCallback)
 {
+	// Rendering must never sample actions, even for library callers bypassing the CLI.
+	if (config.renderMode) {
+		config.ppo.deterministic = true;
+		this->config.ppo.deterministic = true;
+	}
 	TuneMemoryAllocator();
 
 	pybind11::initialize_interpreter();
@@ -253,6 +258,8 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 		auto models = ppo->GetPolicyModels();
 		// NOTE: Versions from another run's folder may well have more timesteps than this checkpoint
 		versionMgr->LoadVersions(models, totalTimesteps, !config.policyVersionsFolder.empty());
+		if (config.skillTracker.anchored)
+			versionMgr->PrepareAnchoredPool((uint32_t)config.randomSeed);
 	}
 
 	if (config.sendMetrics && !config.renderMode) {
@@ -602,12 +609,14 @@ void GGL::Learner::StartSkillMatches(int numRounds, std::function<void(int round
 	if (versionMgr->versions.empty())
 		RG_ERR_CLOSE("Learner::StartSkillMatches(): There are no saved policy versions to play against in " << versionMgr->saveFolder);
 
+	if (config.skillTracker.anchored && numRounds % (2 * versionMgr->versions.size()) != 0)
+		RG_ERR_CLOSE("Anchored rounds must be a multiple of twice the opponent count");
 	RG_LOG("Learner::StartSkillMatches(): " << numRounds << " rounds against " << versionMgr->versions.size() << " policy versions");
 
 	try {
 		for (int i = 0; i < numRounds && !quitRequested; i++) {
 			Report report = {};
-			versionMgr->RunSkillMatches(ppo, report);
+			versionMgr->RunSkillMatches(ppo, report, config.skillTracker.anchored ? i : -1);
 			report["Total Timesteps"] = totalTimesteps;
 			report.Finish();
 			if (roundCallback)
@@ -647,7 +656,7 @@ void GGL::Learner::Start() {
 		int numPlayers = envSet->state.numPlayers;
 
 		struct Trajectory {
-			FList states, nextStates, rewards, logProbs;
+			FList states, nextStates, rewards, logProbs, values;
 			std::vector<uint8_t> actionMasks;
 			std::vector<int8_t> terminals;
 			std::vector<int32_t> actions;
@@ -661,6 +670,7 @@ void GGL::Learner::Start() {
 				nextStates += other.nextStates;
 				rewards += other.rewards;
 				logProbs += other.logProbs;
+				values += other.values;
 				actionMasks += other.actionMasks;
 				terminals += other.terminals;
 				actions += other.actions;
@@ -671,6 +681,9 @@ void GGL::Learner::Start() {
 			}
 		};
 
+		// On fixed rollouts all samples are gathered before the next update. Reuse the actor's shared
+		// features for the critic here, instead of encoding every car a second time before GAE.
+		bool collectValues = config.ppo.fixedRollout && !render && ppo->device.is_cpu();
 		auto trajectories = std::vector<Trajectory>(numPlayers, Trajectory{});
 		int maxEpisodeLength = (int)(config.ppo.maxEpisodeDuration * (120.f / config.tickSkip));
 
@@ -689,7 +702,7 @@ void GGL::Learner::Start() {
 			for (int i = 0; i < numPlayers; i++)
 				newPlayerIndices.push_back(i);
 
-			if (config.trainAgainstOldVersions) {
+			if (!render && config.trainAgainstOldVersions) {
 				RG_ASSERT(config.trainAgainstOldChance >= 0 && config.trainAgainstOldChance <= 1);
 				bool shouldTrainAgainstOld =
 					(RocketSim::Math::RandFloat() < config.trainAgainstOldChance)
@@ -739,6 +752,11 @@ void GGL::Learner::Start() {
 
 				// Only contains complete episodes
 				auto combinedTraj = Trajectory();
+				if (config.ppo.fixedRollout && !render) {
+					size_t rows = config.ppo.tsPerItr + numRealPlayers;
+					combinedTraj.states.reserve(rows * obsSize);
+					combinedTraj.actionMasks.reserve(rows * numActions);
+				}
 
 				if (collectionInferThreads > 0)
 					torch::set_num_threads(collectionInferThreads);
@@ -752,7 +770,12 @@ void GGL::Learner::Start() {
 
 					for (int step = 0; combinedTraj.Length() < config.ppo.tsPerItr || render; step++, stepsCollected += numRealPlayers) {
 						Timer stepTimer = {};
-						envSet->Reset();
+						if (render && envSet->state.terminals[0] && config.renderChooseTeamSize) {
+							envSet->ResetSingleArenaWithTeamSize(config.renderChooseTeamSize());
+							numPlayers = numRealPlayers = envSet->state.numPlayers;
+						} else {
+							envSet->Reset();
+						}
 						envStepTime += stepTimer.Elapsed();
 
 						// Start simulating the action delay right away (it only depends on the previous actions).
@@ -790,7 +813,7 @@ void GGL::Learner::Start() {
 							}
 						}
 
-						torch::Tensor tActions, tLogProbs;
+						torch::Tensor tActions, tLogProbs, tValues;
 						torch::Tensor tStates = DIMLIST2_TO_TENSOR<float>(envSet->state.obs);
 						torch::Tensor tActionMasks = DIMLIST2_TO_TENSOR<uint8_t>(envSet->state.actionMasks);
 
@@ -815,7 +838,7 @@ void GGL::Learner::Start() {
 							torch::Tensor tNewActions;
 							torch::Tensor tOldActions;
 
-							ppo->InferActions(tdNewStates, tdNewActionMasks, &tNewActions, &tLogProbs);
+							ppo->InferActions(tdNewStates, tdNewActionMasks, &tNewActions, &tLogProbs, nullptr, collectValues ? &tValues : nullptr);
 							ppo->InferActions(tdOldStates, tdOldActionMasks, &tOldActions, NULL, &oldVersion->models);
 
 							tActions = torch::zeros(numPlayers, tNewActions.dtype());
@@ -824,13 +847,14 @@ void GGL::Learner::Start() {
 						} else {
 							torch::Tensor tdStates = tStates.to(ppo->device, true);
 							torch::Tensor tdActionMasks = tActionMasks.to(ppo->device, true);
-							ppo->InferActions(tdStates, tdActionMasks, &tActions, &tLogProbs);
+							ppo->InferActions(tdStates, tdActionMasks, &tActions, &tLogProbs, nullptr, collectValues ? &tValues : nullptr);
 							tActions = tActions.cpu();
 						}
 						inferTime += inferTimer.Elapsed();
 
 						auto curActions = TENSOR_TO_VEC<int>(tActions);
-						FList newLogProbs;
+						FList values, newLogProbs;
+						if (collectValues) values = TENSOR_TO_VEC<float>(tValues);
 						if (tLogProbs.defined() && !render)
 							newLogProbs = TENSOR_TO_VEC<float>(tLogProbs);	
 
@@ -853,7 +877,7 @@ void GGL::Learner::Start() {
 							std::unordered_map<std::string, AvgTracker> avgRewards = {};
 							for (int i = 0; i < numSamples; i++) {
 								int arenaIdx = Math::RandInt(0, envSet->arenas.size());
-								auto& prevRewards = envSet->state.lastRewards[i];
+								auto& prevRewards = envSet->state.lastRewards[arenaIdx];
 
 								for (int j = 0; j < envSet->rewards[arenaIdx].size(); j++) {
 									std::string rewardName = envSet->rewards[arenaIdx][j].reward->GetName();
@@ -871,6 +895,7 @@ void GGL::Learner::Start() {
 							trajectories[newPlayerIdx].actions.push_back(curActions[newPlayerIdx]);
 							trajectories[newPlayerIdx].rewards += envSet->state.rewards[newPlayerIdx];
 							trajectories[newPlayerIdx].logProbs += newLogProbs[i];
+							if (collectValues) trajectories[newPlayerIdx].values.push_back(values[i]);
 							i++;
 						}
 
@@ -886,12 +911,13 @@ void GGL::Learner::Start() {
 								curTerminals[playerStartIdx + i] = terminalType;
 						}
 
+						bool endOfRollout = config.ppo.fixedRollout && stepsCollected + numRealPlayers >= config.ppo.tsPerItr;
 						for (int newPlayerIdx : newPlayerIndices) {
 							int8_t terminalType = curTerminals[newPlayerIdx];
 							auto& traj = trajectories[newPlayerIdx];
 
-							if (!terminalType && traj.Length() >= maxEpisodeLength) {
-								// Episode is too long, truncate it here
+							if (!terminalType && (traj.Length() >= maxEpisodeLength || endOfRollout)) {
+								// Bootstrap at a duration limit or the on-policy rollout boundary
 								// This won't actually reset the env, but rather will just add it to experience buffer as truncated
 								terminalType = RLGC::TerminalType::TRUNCATED;
 							}
@@ -948,7 +974,7 @@ void GGL::Learner::Start() {
 					torch::Tensor tTruncValPreds;
 
 					// Predict values, in parts of the PPO learner's minibatch size (limits memory use, and is faster on a CPU than all at once)
-					tValPreds = ppo->InferCriticInParts(tStates);
+					tValPreds = collectValues ? torch::tensor(combinedTraj.values) : ppo->InferCriticInParts(tStates);
 					if (tNextTruncStates.defined())
 						tTruncValPreds = ppo->InferCriticInParts(tNextTruncStates);
 
@@ -1009,6 +1035,11 @@ void GGL::Learner::Start() {
 
 				uint64_t prevTimesteps = totalTimesteps;
 				totalTimesteps += stepsCollected;
+				if (!quitRequested && config.maxTimesteps && totalTimesteps >= config.maxTimesteps) {
+					quitRequested = true;
+					rateBeforeQuit = true;
+					RG_LOG("Stopping after this iteration (timestep limit reached).");
+				}
 				report["Total Timesteps"] = totalTimesteps;
 				totalIterations++;
 				report["Total Iterations"] = totalIterations;

@@ -298,6 +298,26 @@ void RLGC::EnvSet::SetMirrorX(int blueTeam, int orangeTeam) {
 	}
 }
 
+void RLGC::EnvSet::ResetSingleArenaWithTeamSize(int teamSize) {
+	if (arenas.size() != 1 || teamSize < 1 || teamSize > 3)
+		RG_ERR_CLOSE("ResetSingleArenaWithTeamSize requires one arena and a 1v1/2v2/3v3 team size");
+	Sync();
+	auto arena = arenas[0];
+	if (arena->_cars.size() != teamSize * 2) {
+		while (!arena->_cars.empty())
+			arena->RemoveCar(*arena->_cars.begin());
+		for (int i = 0; i < teamSize; i++) {
+			arena->AddCar(Team::BLUE);
+			arena->AddCar(Team::ORANGE);
+		}
+	}
+	state = EnvState{};
+	state.Resize(arenas);
+	state.obs = DimList2<float>(state.numPlayers, obsSize);
+	state.actionMasks = DimList2<uint8_t>(state.numPlayers, actionParsers[0]->GetActionAmount());
+	ResetArena(0);
+}
+
 void RLGC::EnvSet::ResetArena(int index) {
 	stateSetters[index]->ResetArena(arenas[index]);
 	GameState newState = GameState(arenas[index]);

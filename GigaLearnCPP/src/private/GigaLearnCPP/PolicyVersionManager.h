@@ -123,7 +123,8 @@ namespace GGL {
 
 		void SortVersions();
 
-		void RunSkillMatches(struct PPOLearner* ppo, Report& report);
+		void PrepareAnchoredPool(uint32_t seed);
+		void RunSkillMatches(struct PPOLearner* ppo, Report& report, int fixture = -1);
 
 		// Several rounds of skill matches in a row, see SkillTrackerConfig::updateIntervalMinutes
 		void RunSkillSession(struct PPOLearner* ppo, Report& report);

@@ -2,6 +2,7 @@
 #include <RLGymCPP/BasicTypes/Lists.h>
 #include "PPO/PPOLearnerConfig.h"
 
+#include <functional>
 #include <map>
 #include <string>
 #include "SkillTrackerConfig.h"
@@ -21,6 +22,8 @@ namespace GGL {
 		int actionDelay = 7;
 
 		bool renderMode = false;
+		// Optional episode-boundary selector for the ONE render arena; never used in training.
+		std::function<int()> renderChooseTeamSize = nullptr;
 		// If renderMode, this is the scaling of time for the game
 		// 1.0 = Run the game at real time
 		// 2.0 = Run the game twice as fast as real time
@@ -36,6 +39,7 @@ namespace GGL {
 		// Save every timestep
 		// Set to zero to just use timestepsPerIteration
 		int64_t tsPerSave = 1'000'000;
+		uint64_t maxTimesteps = 0; // PPO: stop at an iteration boundary, counting learner steps only
 
 		// Optional notes that are saved into every checkpoint as "INFO.json" (e.g. which model config and obs builder it needs).
 		// The learner itself doesn't read them.

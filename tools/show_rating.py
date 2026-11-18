@@ -8,7 +8,9 @@ run time and the goals of the rating games.
     tools/show_rating.py RUN_METRICS_DIR_OR_FILE [...] [--mode 1v1] [--every 1000000] [--last 2000000] [--plot rating.png]
 
 For rated checkpoints: reads the .json files of "GigaLearnBot --rate-rounds N --rate-out FILE" and prints them as one table.
-Checkpoints that were rated against the same policy versions (--rate-versions) are on the same scale.
+Compare checkpoints evaluated with the same frozen pool, modes, fixtures and round count.
+Use --mode Ranking for the equal-weight mean over the evaluated modes.
+Pass a train_ranked.py campaign directory for its stage history and the selected checkpoint.
 
     tools/show_rating.py RATING.json [...] [--mode 1v1]
 """
@@ -78,19 +80,55 @@ def show_rated(paths, mode):
 
     print(f"{'checkpoint':<28} {'timesteps':>11} {'rating':>7} {'+-':>4} {'goals':>11} {'share':>6} {'rounds':>6} {'start':>7} {'end':>7}")
     for name, j, r in sorted(results, key=lambda x: -x[2]["average"]):
-        goals_for, goals_against = j["goals_for"], j["goals_against"]
+        per_mode = j.get("mode_goals", {}).get(mode)
+        goals_for, goals_against = (per_mode["for"], per_mode["against"]) if per_mode else (j["goals_for"], j["goals_against"])
         goals = max(goals_for + goals_against, 1)
         share = goals_for / goals
 
         # Rule of thumb for how far a repeat of the session lands from this one (1 standard deviation).
         # Measured with repeated sessions of about 1,350 goals: about 15 points. It shrinks with the square root of the goals.
-        error = 550 / math.sqrt(goals)
+        # This heuristic has not been calibrated for fixed opponent ratings.
+        error = "-" if j.get("anchored") else f"{550 / math.sqrt(goals):.0f}"
+        # Some aggregate scores (including older Rating/Average) only have an average.
+        start, end = (f"{r[k]:.1f}" if k in r else "-" for k in ("start", "end"))
 
-        print(f"{name:<28} {j['checkpoint_timesteps']:>11,} {r['average']:>7.1f} {error:>4.0f} "
-              f"{goals_for:>5.0f}:{goals_against:<5.0f} {100 * share:>5.1f}% {j['rounds']:>6} {r['start']:>7.1f} {r['end']:>7.1f}")
+        print(f"{name:<28} {j['checkpoint_timesteps']:>11,} {r['average']:>7.1f} {error:>4} "
+              f"{goals_for:>5.0f}:{goals_against:<5.0f} {100 * share:>5.1f}% {j['rounds']:>6} {start:>7} {end:>7}")
     print("\nrating: average of \"Rating/" + mode + "\" over the last three quarters of the rounds.\n"
-          "+-: how far a repeat of the session typically lands from it (about 550 / sqrt(goals) points).\n"
-          "share: goals of the checkpoint out of all goals against the versions it played.")
+          "+-: legacy tracker heuristic (not calibrated for anchored matches).\n"
+          "share: fraction of goals scored by the checkpoint, per mode if available, otherwise across modes.")
+
+
+def show_campaign(path):
+    with open(os.path.join(path, "state.json")) as f:
+        state = json.load(f)
+    config = state["config"]
+    print(f"{path}: {state['status']} | {sum(config['minutes'])} min scheduled")
+    print(f"{'stage':>5} {'checkpoint':>13} {'train min':>9} {'steps/s':>8} | {'1v1':>7} {'2v2':>7} {'3v3':>7} | {'screen':>7} {'confirm':>7}  selection")
+    for r in state["history"]:
+        screen = r["screen"]
+        confirm = f"{r['confirm']['Ranking']:.1f}" if r['confirm'] else "-"
+        speed = f"{r['steps_per_second']:,.0f}" if r['steps_per_second'] else "-"
+        decision = 'parent' if r['stage'] == 0 else ('promoted' if r['promoted'] else 'kept incumbent')
+        print(f"{r['stage']:>5} {r['steps']:>13,} {r['train_seconds']/60:>9.1f} {speed:>8} | "
+              f"{screen['1v1']:>7.1f} {screen['2v2']:>7.1f} {screen['3v3']:>7.1f} | "
+              f"{screen['Ranking']:>7.1f} {confirm:>7}  {decision}")
+    print(f"Screen seed: {config['screen_seed']}; confirmation: {config['confirm_seed']}. "
+          "Each Ranking is the mean of all three mode Elos.")
+    if state.get('best'):
+        print(f"Selected: {os.path.join(path, 'best', str(state['best']['steps']))}")
+    if state.get('pending'):
+        print(f"Pending stage {state['pending']['stage']}: {state['pending']['seconds']/60:.1f} training minutes recorded.")
+    if state.get('audit'):
+        audit = state['audit']
+        baseline = audit[str(config['parent_steps'])]['Ranking']
+        roles = {'parent': config['parent_steps'], 'selected': state['best']['steps'], 'latest': state['history'][-1]['steps']}
+        print(f"\nHeld-out seed {config['audit_seed']} (not used for selection)")
+        print(f"{'checkpoint':>13} {'1v1':>7} {'2v2':>7} {'3v3':>7} {'Ranking':>8} {'vs parent':>10}  role")
+        for step, r in audit.items():
+            role = ', '.join(name for name, n in roles.items() if n == int(step))
+            print(f"{int(step):>13,} {r['1v1']:>7.1f} {r['2v2']:>7.1f} {r['3v3']:>7.1f} "
+                  f"{r['Ranking']:>8.1f} {r['Ranking']-baseline:>+10.1f}  {role}")
 
 
 def plot_runs(runs, mode, out_path, marks=(), hours=False):
@@ -172,6 +210,10 @@ def main():
     parser.add_argument("--hours", action="store_true", help="plot: run time in hours as the x-axis instead of timesteps (marks are then in hours too)")
     args = parser.parse_args()
 
+    campaigns = [p for p in args.paths if os.path.isfile(os.path.join(p, "state.json"))]
+    for p in campaigns:
+        show_campaign(p)
+    args.paths = [p for p in args.paths if p not in campaigns]
     rated = [p for p in args.paths if p.endswith(".json")]
     if rated:
         show_rated(rated, args.mode)

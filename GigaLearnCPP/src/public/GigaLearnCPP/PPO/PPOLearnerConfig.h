@@ -9,6 +9,8 @@ namespace GGL {
 	struct PPOLearnerConfig {
 
 		int64_t tsPerItr = 50'000;
+		// Bootstrap unfinished trajectories at each PPO boundary, without resetting the simulation.
+		bool fixedRollout = false;
 		int64_t batchSize = 50'000;
 		int64_t miniBatchSize = 0; // Set to 0 to just use batchSize
 
