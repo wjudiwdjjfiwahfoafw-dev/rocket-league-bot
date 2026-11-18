@@ -90,10 +90,26 @@ def run(cmd, env, log, heartbeat=None):
             child = None
 
 
+def policy_digest(path):
+    """Fingerprint actual inference weights, not their timestep directory name."""
+    digest = hashlib.sha256()
+    for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
+        digest.update(name.encode() + b'\0' + (path / name).read_bytes())
+    return digest.hexdigest()
+
+
+def validate_execution(result):
+    settings = result.get('settings', {})
+    if settings.get('deterministic') is not False or settings.get('policy_temperature') != 1.0:
+        raise ValueError('Ranked training requires sampled actions at temperature 1; no evaluation calibration')
+
+
 def score(args, path, seed, rounds, pool_hash, env, logdir):
     """Cache only a complete eval of this immutable step, pool and protocol."""
     out = args.out / 'eval' / f'{path.name}-{seed}-{rounds}.json'
-    if not out.exists():
+    weights_sha = policy_digest(path)
+    cache_valid = out.exists() and read(out).get('policy_sha256') == weights_sha
+    if not cache_valid:
         # --checkpoints takes a *parent*. Give it exactly one checkpoint, even to rate an old best.
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -103,16 +119,19 @@ def score(args, path, seed, rounds, pool_hash, env, logdir):
                  '--rate-rounds', rounds, '--skill-arenas', '36', '--seed', seed, '--threads', args.threads,
                  '--rate-out', tmp / 'score.json'], env, logdir / 'eval.log')
             result = read(tmp / 'score.json')
-            result.update(checkpoints=str(path), pool_sha256=pool_hash)
+            result.update(checkpoints=str(path), pool_sha256=pool_hash, policy_sha256=weights_sha)
     else:
         result = read(out)
+    validate_execution(result)
+    if policy_digest(path) != weights_sha:
+        raise ValueError('Policy weights changed during evaluation')
     if (not result['anchored'] or result['seed'] != seed or result['rounds'] != rounds or
             result['pool_sha256'] != pool_hash or result['checkpoint_timesteps'] != int(path.name)):
         raise ValueError(f'Incomplete or mismatched rating: {out}')
     if pool_digest(args.out / 'pool') != pool_hash:
         raise ValueError('Frozen pool changed during campaign')
     ratings = checked_ranking(result, args.out / 'pool')
-    if not out.exists():
+    if not cache_valid:
         write(out, result)
     print(f'{path.name} seed {seed}: {ratings}', flush=True)
     return ratings
@@ -177,13 +196,15 @@ def campaign(args):
         train_args.extend(['--rewards', args.rewards])
     config = dict(base=str(base), preset_sha256=hashlib.sha256((REPO / 'train_1v1_2v2_3v3.sh').read_bytes()).hexdigest(),
                   parent_steps=int(base.name), seed=args.seed, screen_seed=SCREEN,
-                  confirm_seed=CONFIRM, audit_seed=AUDIT, rounds=args.rounds, train_args=train_args,
+                  confirm_seed=CONFIRM, audit_seed=getattr(args, 'audit_seed', AUDIT), rounds=args.rounds, train_args=train_args,
                   minutes=plan, modes=list(MODES), protocol='anchored-v1')
+    if getattr(args, 'reference_pool', None) is not None:
+        config['reference_pool'] = str(args.reference_pool)
     statefile = out / 'state.json'
     if not statefile.exists():
         if any(p.name != '.lock' for p in out.iterdir()):
             raise ValueError(f'Refusing to overwrite a non-empty campaign directory: {out}')
-        src_pool = base.parent / 'policy_versions'
+        src_pool = getattr(args, 'reference_pool', None) or (base.parent / 'policy_versions')
         count = len([p for p in src_pool.iterdir() if p.name.isdecimal() and p.is_dir()])
         if not count or args.rounds % (2 * count):
             raise ValueError('--rounds must be a multiple of twice the size of the (nonempty) pool')
@@ -198,6 +219,11 @@ def campaign(args):
     state = read(statefile)
     if config != state['config'] or pool_digest(out / 'pool') != state['pool_sha256']:
         raise ValueError('Campaign settings or frozen pool changed. Use the original settings or a fresh --out.')
+    if out.resolve().is_relative_to(REPO.resolve()):
+        state['working_directory'] = str(out.resolve().relative_to(REPO.resolve()))
+    if getattr(args, 'target_ranking', None) is not None:
+        state['target_ranking'] = args.target_ranking
+        write(statefile, state)
     if state['status'] == 'complete':
         print('Campaign already complete:', statefile)
         return
@@ -284,7 +310,7 @@ def campaign(args):
         # An untouched seed measures the selected checkpoint against the original baseline on the same scale.
         state['status'] = 'auditing'
         write(statefile, state)
-        state['audit'] = {p.name: evaluate(p, AUDIT, 2 * args.rounds) for p in
+        state['audit'] = {p.name: evaluate(p, config['audit_seed'], 2 * args.rounds) for p in
                           (base, out / 'best' / str(state['best']['steps']), newest(learner))}
         if wb is not None:
             ranked_wandb.log_audit(wb, state)
@@ -326,12 +352,17 @@ def main():
     parser.add_argument('--monitor', action='store_true', help='Serve all recorded metrics in a browser')
     parser.add_argument('--monitor-port', type=int, default=8080)
     parser.add_argument('--github-backup', action='store_true', help='Automatically commit resumable snapshots and push the current branch (also starts monitor)')
+    parser.add_argument('--reference-pool', type=Path, help='Explicit immutable opponent pool for a fresh experiment')
+    parser.add_argument('--audit-seed', type=int, default=AUDIT, help='Predeclared held-out audit seed')
+    parser.add_argument('--target-ranking', type=float, help='Report a weight-only temperature-1 Ranking target; does not change immutable training settings')
     parser.add_argument('--lr', type=float, help='Explicit learning-rate override for a fresh experiment')
     parser.add_argument('--entropy-scale', type=float)
     parser.add_argument('--random-state-prob', type=float)
     parser.add_argument('--train-vs-old', type=float)
     parser.add_argument('--rewards', help='Native comma-separated reward weights for a fresh experiment')
     args = parser.parse_args()
+    if args.target_ranking is not None and not (0 < args.target_ranking < 10000):
+        parser.error('--target-ranking must be finite and between 0 and 10000')
     if args.lr is not None and not (0 < args.lr <= 0.01):
         parser.error('--lr must be in (0, 0.01]')
     if args.entropy_scale is not None and not (0 <= args.entropy_scale <= 1):

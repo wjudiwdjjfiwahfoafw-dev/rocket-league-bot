@@ -14,6 +14,23 @@ from train_ranked import MODES, checked_ranking, minutes_plan, pool_digest, prom
 
 
 class RankingTests(unittest.TestCase):
+    def test_weight_only_execution_guard(self):
+        ranked.validate_execution({'settings': {'deterministic': False, 'policy_temperature': 1.0}})
+        for settings in ({}, {'deterministic': True, 'policy_temperature': 1.0},
+                         {'deterministic': False, 'policy_temperature': 0.4},
+                         {'deterministic': False, 'policy_temperature': 2.0}):
+            with self.assertRaises(ValueError):
+                ranked.validate_execution({'settings': settings})
+
+    def test_policy_digest_tracks_actual_inference_weights(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
+                (root / name).write_bytes(b'original')
+            before = ranked.policy_digest(root)
+            (root / 'POLICY.lt').write_bytes(b'changed without changing timestep')
+            self.assertNotEqual(before, ranked.policy_digest(root))
+
     def test_budget(self):
         self.assertEqual(minutes_plan(180, 6, 30), [6, 30, 30, 30, 30, 30, 24])
         self.assertEqual(minutes_plan(3, 6, 30), [3])
@@ -89,6 +106,7 @@ class RankingTests(unittest.TestCase):
                 elo = {100: 1500, 120: 1530, 140: 1520}[n]
                 ranked.write(cmd[cmd.index('--rate-out') + 1], dict(
                     anchored=True, seed=seed, rounds=rounds, checkpoint_timesteps=n,
+                    settings=dict(deterministic=False, policy_temperature=1.0),
                     ratings={m: {'average': elo} for m in (*MODES, 'Ranking')},
                     opponents=[dict(timesteps=1, rounds=rounds, ratings=ref)],
                     mode_goals={m: {'for': 3, 'against': 1} for m in MODES}))

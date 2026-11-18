@@ -69,3 +69,5 @@ __pycache__/
 /results/ranking_3043214022/campaign/
 # Local-only W&B segments/exports; durable numeric metrics live in training-backup/.
 /results/**/wandb/
+# Target-1700 writable run; canonical resumable state is in training-backup/.
+/results/weights1700/campaign/
