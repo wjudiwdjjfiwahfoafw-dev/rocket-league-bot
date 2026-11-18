@@ -562,7 +562,7 @@ def run_publisher(args):
                 relay_meta = decode_relay_meta(c.get('body') or '')
                 if relay_meta is not None:
                     break
-            relay_ready = bool(relay_meta and relay_meta.get('run_url'))
+            relay_ready = bool(relay_meta and relay_meta.get('run_url') and relay_meta.get('run_id') == snap['run_id'])
             body, included = encode_snapshot_body(snap)
             digest = hashlib.sha256(json.dumps({
                 'rows_len': len(snap['rows']),

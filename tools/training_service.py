@@ -177,7 +177,11 @@ def backup(campaign, destination, branch, status, min_interval=0, now=None):
     if git('diff', '--cached', '--name-only', '--', relative):
         git('commit', '--only', '-m', f'Back up ranked checkpoint {latest.name}', '--', relative)
         status['push_pending'] = True
-    git('push', 'origin', branch)
+    try:
+        git('push', 'origin', branch)
+    except subprocess.CalledProcessError:
+        git('pull', '--rebase', '--autostash', 'origin', branch)
+        git('push', 'origin', branch)
     commit = git('rev-parse', 'HEAD')
     # Verify the remote points at the pushed commit, not merely that a local commit exists.
     if git('ls-remote', 'origin', 'refs/heads/' + branch).split()[0] != commit:

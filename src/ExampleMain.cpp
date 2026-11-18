@@ -246,10 +246,12 @@ public:
 		// centering the ball across own goal crease is discouraged.
 		float clearBlend = std::clamp(1.f - dOwn / 2600.f, 0.f, 0.7f);
 		float directed = (1.f - clearBlend) * deltaVel.Dot(dirAttack) + clearBlend * deltaVel.Dot(dirClear);
-		float score = std::clamp(directed / NORM_DELTA_VEL, -0.5f, 1.15f);
+		float score = std::clamp(directed / NORM_DELTA_VEL, -0.6f, 1.1f);
 
-		if (score > 0.f && state.ball.pos.z > 260.f) {
-			float airBonus = 1.f + 0.45f * std::clamp((state.ball.pos.z - 260.f) / 740.f, 0.f, 1.f);
+		// Reward productive aerial touches only in team modes (2v2/3v3) where a teammate covers recovery;
+		// in 1v1 risky aerial commits without scoring leave an open net.
+		if (score > 0.f && state.players.size() > 2 && state.ball.pos.z > 300.f) {
+			float airBonus = 1.f + 0.35f * std::clamp((state.ball.pos.z - 300.f) / 700.f, 0.f, 1.f);
 			score *= airBonus;
 		}
 		return score;
@@ -270,10 +272,13 @@ public:
 	}
 };
 
-// Direct finishing & playmaking credit on goals (scorer +1.0, passing assist +0.75).
+// Direct finishing & playmaking credit on goals in team modes (2v2/3v3: scorer +1.0, assist +0.75).
+// Returns 0 in 1v1 where GoalReward already provides exact individual credit without team dilution.
 class ScorerAssistReward : public Reward {
 public:
 	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		if (state.players.size() <= 2)
+			return 0.f;
 		if (player.eventState.goal)
 			return 1.f;
 		if (player.eventState.assist)
@@ -294,42 +299,49 @@ public:
 	}
 };
 
-// Credits defensive saves: both official event saves and close-range/medium-speed trajectory denials,
-// guarded by a per-team cooldown so touches near own net cannot be farmed.
+// Credits defensive saves: official event saves and genuine close-range goal-bound shot denials,
+// guarded by both a post-kickoff grace window (preventing fake-kickoff save farming) and a per-team cooldown.
 class ClutchSaveReward : public Reward {
 	float cooldown[2] = { 0.f, 0.f };
+	float sinceKickoff = 10.f;
 public:
-	static constexpr float SAVE_COOLDOWN = 1.2f;
+	static constexpr float SAVE_COOLDOWN    = 2.0f;
+	static constexpr float KICKOFF_NO_SAVE  = 2.5f;
 
 	virtual void Reset(const GameState& initialState) override {
 		cooldown[0] = cooldown[1] = 0.f;
+		sinceKickoff = IsUntouchedKickoffBall(initialState.ball) ? 0.f : 10.f;
 	}
 
 	virtual void PreStep(const GameState& state) override {
 		for (int t = 0; t < 2; t++)
 			cooldown[t] = std::max(0.f, cooldown[t] - state.deltaTime);
+		if (IsUntouchedKickoffBall(state.ball))
+			sinceKickoff = 0.f;
+		else
+			sinceKickoff += state.deltaTime;
 	}
 
 	static bool BallHeadingIntoGoal(const BallState& b, Team goalTeam) {
 		float sign = (goalTeam == Team::ORANGE) ? 1.f : -1.f;
 		float vyToward = b.vel.y * sign;
-		if (vyToward < 750.f)
+		if (vyToward < 1000.f)
 			return false;
 		float distY = (sign * CommonValues::BACK_WALL_Y - b.pos.y) * sign;
-		if (distY <= 0.f || distY > 3600.f)
+		if (distY <= 0.f || distY > 2600.f)
 			return false;
 		float t = distY / vyToward;
-		if (t > 2.1f)
+		if (t > 1.5f)
 			return false;
 		float xAt = b.pos.x + b.vel.x * t;
 		float zAt = b.pos.z + b.vel.z * t + 0.5f * CommonValues::GRAVITY_Z * t * t;
-		return fabsf(xAt) <= (CommonValues::GOAL_WIDTH_FROM_CENTER + 15.f) &&
-		       zAt <= (CommonValues::GOAL_HEIGHT + 15.f);
+		return fabsf(xAt) <= CommonValues::GOAL_WIDTH_FROM_CENTER &&
+		       zAt <= CommonValues::GOAL_HEIGHT;
 	}
 
 	virtual std::vector<float> GetAllRewards(const GameState& state, bool isFinal) override {
 		std::vector<float> out(state.players.size(), 0.f);
-		if (state.goalScored)
+		if (state.goalScored || sinceKickoff < KICKOFF_NO_SAVE)
 			return out;
 		for (size_t i = 0; i < state.players.size(); i++) {
 			const auto& p = state.players[i];
@@ -342,7 +354,7 @@ public:
 			} else if (p.ballTouchedStep && state.prev &&
 			           BallHeadingIntoGoal(state.prev->ball, p.team) &&
 			           !BallHeadingIntoGoal(state.ball, p.team)) {
-				val = std::clamp(fabsf(state.prev->ball.vel.y) / 1800.f, 0.5f, 1.f);
+				val = std::clamp(fabsf(state.prev->ball.vel.y) / 2000.f, 0.5f, 1.f);
 			}
 			if (val > 0.f) {
 				out[i] = val;
@@ -353,52 +365,81 @@ public:
 	}
 
 	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
-		return player.eventState.save ? 1.f : 0.f;
+		return (sinceKickoff >= KICKOFF_NO_SAVE && player.eventState.save) ? 1.f : 0.f;
 	}
 };
 
-// Smooth, exact zero-sum kickoff closing-speed reward. Evaluates each team's closest car(s) while
-// the kickoff ball lies untouched on the center spot, giving equal strength in 1v1, 2v2 and 3v3
-// while leaving back-spawned teammates free to guard net, cheat up or collect boost.
+// Fake-kickoff-proof exact zero-sum kickoff reward:
+// 1) While the kickoff ball sits untouched on the center spot, compares closing velocity of each team's
+//    closest kickoff car(s) (leaving back teammates free to cheat up, guard net, or grab boost).
+// 2) On the step the kickoff ball is first touched, awards a crisp zero-sum bonus for winning the
+//    first touch (0 if both teams make simultaneous 50/50 contact) plus directional kickoff outcome
+//    into the opponent's half — preventing the braking-before-contact fake-kickoff exploit.
 class KickoffSpeedReward : public Reward {
+	bool kickoffPending = false;
 public:
+	static constexpr float FIRST_TOUCH_BONUS = 6.0f;
+	static constexpr float OUTCOME_VEL_BONUS = 4.0f;
+
+	virtual void Reset(const GameState& initialState) override {
+		kickoffPending = IsUntouchedKickoffBall(initialState.ball);
+	}
+
 	virtual std::vector<float> GetAllRewards(const GameState& state, bool isFinal) override {
 		std::vector<float> out(state.players.size(), 0.f);
-		if (!IsUntouchedKickoffBall(state.ball))
-			return out;
+		if (IsUntouchedKickoffBall(state.ball)) {
+			kickoffPending = true;
 
-		float minDist[2] = { 1e9f, 1e9f };
-		for (const auto& p : state.players) {
-			if (p.isDemoed)
-				continue;
-			float d = (state.ball.pos - p.pos).Length();
-			int t = (int)p.team;
-			if (d < minDist[t])
-				minDist[t] = d;
-		}
-
-		float bestClosing[2] = { -1.f, -1.f };
-		bool hasCar[2] = { false, false };
-		for (const auto& p : state.players) {
-			if (p.isDemoed)
-				continue;
-			int t = (int)p.team;
-			Vec toBall = state.ball.pos - p.pos;
-			float d = toBall.Length();
-			if (d > minDist[t] + 150.f || d < 1e-3f)
-				continue;
-			float c = (toBall * (1.f / d)).Dot(p.vel) * (1.f / CommonValues::CAR_MAX_SPEED);
-			if (!hasCar[t] || c > bestClosing[t]) {
-				bestClosing[t] = c;
-				hasCar[t] = true;
+			float minDist[2] = { 1e9f, 1e9f };
+			for (const auto& p : state.players) {
+				if (p.isDemoed)
+					continue;
+				float d = (state.ball.pos - p.pos).Length();
+				int t = (int)p.team;
+				if (d < minDist[t])
+					minDist[t] = d;
 			}
-		}
-		if (!hasCar[0] || !hasCar[1])
-			return out;
 
-		float blueAdv = bestClosing[0] - bestClosing[1];
-		for (size_t i = 0; i < state.players.size(); i++)
-			out[i] = (state.players[i].team == Team::BLUE) ? blueAdv : -blueAdv;
+			float bestClosing[2] = { -1.f, -1.f };
+			bool hasCar[2] = { false, false };
+			for (const auto& p : state.players) {
+				if (p.isDemoed)
+					continue;
+				int t = (int)p.team;
+				Vec toBall = state.ball.pos - p.pos;
+				float d = toBall.Length();
+				if (d > minDist[t] + 150.f || d < 1e-3f)
+					continue;
+				float c = (toBall * (1.f / d)).Dot(p.vel) * (1.f / CommonValues::CAR_MAX_SPEED);
+				if (!hasCar[t] || c > bestClosing[t]) {
+					bestClosing[t] = c;
+					hasCar[t] = true;
+				}
+			}
+			if (!hasCar[0] || !hasCar[1])
+				return out;
+
+			float blueAdv = bestClosing[0] - bestClosing[1];
+			for (size_t i = 0; i < state.players.size(); i++)
+				out[i] = (state.players[i].team == Team::BLUE) ? blueAdv : -blueAdv;
+			return out;
+		}
+
+		if (kickoffPending) {
+			kickoffPending = false;
+			bool touched[2] = { false, false };
+			for (const auto& p : state.players)
+				if (p.ballTouchedStep)
+					touched[(int)p.team] = true;
+
+			float blueAdv = 0.f;
+			if (touched[0] != touched[1])
+				blueAdv += touched[0] ? FIRST_TOUCH_BONUS : -FIRST_TOUCH_BONUS;
+			// Also reward winning the initial 50/50 velocity toward the opponent half.
+			blueAdv += OUTCOME_VEL_BONUS * std::clamp(state.ball.vel.y / 2200.f, -1.f, 1.f);
+			for (size_t i = 0; i < state.players.size(); i++)
+				out[i] = (state.players[i].team == Team::BLUE) ? blueAdv : -blueAdv;
+		}
 		return out;
 	}
 
@@ -407,14 +448,14 @@ public:
 	}
 };
 
-// Exact zero-sum first-man challenge pressure: compares non-negative closing speed of each team's
-// nearest alive player toward the ball during live play. Cures passive 2v2/3v3 play and wins loose
-// balls without penalizing shadow defense (clamped >= 0) or pulling 2nd/3rd man out of rotation.
+// Exact zero-sum first-man challenge pressure in team modes (2v2/3v3): compares non-negative closing
+// speed of each team's nearest alive player toward the ball during live play. Cures passive 2v2/3v3
+// play without inducing reckless unbacked dives in 1v1 (returns 0 in 1v1) or punishing shadow defense.
 class TeamPressureReward : public Reward {
 public:
 	virtual std::vector<float> GetAllRewards(const GameState& state, bool isFinal) override {
 		std::vector<float> out(state.players.size(), 0.f);
-		if (IsUntouchedKickoffBall(state.ball))
+		if (state.players.size() <= 2 || IsUntouchedKickoffBall(state.ball))
 			return out;
 
 		float bestDistSq[2] = { 1e18f, 1e18f };
@@ -433,6 +474,52 @@ public:
 		}
 
 		float blueAdv = press[0] - press[1];
+		for (size_t i = 0; i < state.players.size(); i++)
+			out[i] = (state.players[i].team == Team::BLUE) ? blueAdv : -blueAdv;
+		return out;
+	}
+
+	virtual float GetReward(const Player& player, const GameState& state, bool isFinal) override {
+		return GetAllRewards(state, isFinal)[player.index];
+	}
+};
+
+// Exact zero-sum 1v1 discipline & shadow-positioning reward (0 in 2v2/3v3): rewards keeping own car
+// goal-side when the ball heads toward own net and staying grounded when far from aerial balls so the
+// bot never leaves an open net in 1v1 from aimless high-air commits.
+class SoloDisciplineReward : public Reward {
+public:
+	virtual std::vector<float> GetAllRewards(const GameState& state, bool isFinal) override {
+		std::vector<float> out(state.players.size(), 0.f);
+		if (state.players.size() != 2 || IsUntouchedKickoffBall(state.ball))
+			return out;
+
+		float score[2] = { 0.f, 0.f };
+		Vec ball2D(state.ball.pos.x, state.ball.pos.y, 0.f);
+		for (const auto& p : state.players) {
+			if (p.isDemoed) {
+				score[(int)p.team] = -0.5f;
+				continue;
+			}
+			float sign = (p.team == Team::BLUE) ? 1.f : -1.f;
+			float s = 0.f;
+			// Penalize aimless high-air float when not near an aerial ball (major cause of 1v1 open nets).
+			if (!p.isOnGround && p.pos.z > 240.f && !p.ballTouchedStep) {
+				float ballDist = (state.ball.pos - p.pos).Length();
+				if (ballDist > 550.f || state.ball.pos.z < 180.f)
+					s -= 0.45f * std::clamp((p.pos.z - 240.f) / 500.f, 0.25f, 1.f);
+			}
+			// Reward goal-side recovery when the ball is moving toward own goal.
+			float vyOwn = -state.ball.vel.y * sign;
+			if (vyOwn > 350.f) {
+				Vec ownGoal(0.f, -sign * CommonValues::BACK_WALL_Y, 0.f);
+				float margin = (ball2D - ownGoal).Length() - (Vec(p.pos.x, p.pos.y, 0.f) - ownGoal).Length();
+				float urgency = std::clamp(vyOwn / 2200.f, 0.15f, 1.f);
+				s += 0.55f * urgency * std::clamp(margin / 1400.f, -1.f, 0.5f);
+			}
+			score[(int)p.team] = s;
+		}
+		float blueAdv = score[0] - score[1];
 		for (size_t i = 0; i < state.players.size(); i++)
 			out[i] = (state.players[i].team == Team::BLUE) ? blueAdv : -blueAdv;
 		return out;
@@ -575,11 +662,13 @@ static const std::vector<RewardDef> REWARD_DEFS = {
 	{ "ScorerAssist", 0, []() -> Reward* { return new ZeroSumReward(new ScorerAssistReward(), 0.f); }, "direct scorer and passing assist credit on goals (zero-sum)" },
 	{ "Shot", 0, []() -> Reward* { return new ZeroSumReward(new ShotAndPassReward(), 0.25f); }, "verified high-speed shots on target and shot-passes (zero-sum)" },
 	{ "Save", 0, []() -> Reward* { return new ZeroSumReward(new ClutchSaveReward(), 0.25f); }, "verified saves and goal-bound shot blocks with cooldown (zero-sum)" },
-	{ "KickoffSpeed", 0, []() -> Reward* { return new KickoffSpeedReward(); }, "smooth closing speed of each team's closest car on untouched kickoffs (zero-sum)" },
-	{ "TeamPressure", 0, []() -> Reward* { return new TeamPressureReward(); }, "non-negative closing speed of each team's first-man challenger (zero-sum)" },
+	{ "KickoffSpeed", 0, []() -> Reward* { return new KickoffSpeedReward(); }, "closing speed, first-touch win and directional 50/50 outcome on kickoffs (zero-sum)" },
+	{ "TeamPressure", 0, []() -> Reward* { return new TeamPressureReward(); }, "non-negative closing speed of each team's first-man challenger in 2v2/3v3 (zero-sum, 0 in 1v1)" },
+	{ "SoloDiscipline", 0, []() -> Reward* { return new SoloDisciplineReward(); }, "1v1 shadow recovery and anti-overcommit air discipline (zero-sum, 0 in 2v2/3v3)" },
 	{ "DefensiveCover", 0, []() -> Reward* { return new DefensiveCoverReward(); }, "last-man 2D goal-side rotation cover in 2v2/3v3 (zero-sum, 0 in 1v1)" },
 	{ "DoubleCommit", 0, []() -> Reward* { return new ZeroSumReward(new DoubleCommitReward(), 0.3f); }, "penalizes teammate crowding and ball double-commits in 2v2/3v3 (zero-sum, 0 in 1v1)" },
 	{ "PickupBoostZS", 0, []() -> Reward* { return new ZeroSumReward(new PickupBoostReward(), 0.2f); }, "collecting boost pads and starving opponents (zero-sum)" },
+	{ "DemoZS", 0, []() -> Reward* { return new ZeroSumReward(new DemoReward(), 0.5f); }, "demolishing opponents while avoiding being demolished (zero-sum)" },
 };
 
 // Weights that differ from the defaults (--rewards)
