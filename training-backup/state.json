@@ -3,10 +3,10 @@
     "base": "checkpoints/3244539846",
     "preset_sha256": "0157781c2e10d1973db968319e90da89755a54c2e68a4ffcfc15bf34b244ced4",
     "parent_steps": 3244539846,
-    "seed": 20261120,
+    "seed": 20261130,
     "screen_seed": 1009,
     "confirm_seed": 2003,
-    "audit_seed": 9007,
+    "audit_seed": 9011,
     "rounds": 40,
     "train_args": [
       "--threads",
@@ -24,43 +24,48 @@
       "--minibatch-size",
       "1008",
       "--lr",
-      "0.00011",
+      "7.5e-05",
       "--skill-minutes",
-      "20.0",
+      "25.0",
       "--ts-per-save",
       "10m",
       "--keep-checkpoints",
       "2",
       "--critic-lr",
-      "0.0002",
+      "0.00018",
       "--epochs",
       "2",
       "--entropy-scale",
-      "0.0022",
+      "0.0034",
       "--norm-advantages",
       "mode",
       "--target-kl",
-      "0.02",
+      "0.015",
+      "--gamma",
+      "0.992",
       "--return-stat-max-count",
       "200000",
       "--random-state-prob",
       "0.0",
       "--tactical-state-prob",
-      "0.22",
+      "0.12",
       "--train-vs-old",
-      "0.3",
+      "0.5",
       "--ts-per-version",
-      "10m",
+      "20m",
       "--max-versions",
-      "16",
+      "14",
       "--mask-entropy",
       "--fuzzed-kickoffs",
-      "--pfsp",
       "--rewards",
-      "Air=0,FaceBall=0,VelocityPlayerToBall=0,NearestVelocityToBall=0,TeamVelocityToBall=0,StrongTouch=0,TouchAccel=0,VelocityBallToGoal=0,BehindBall=0,TeamSpacing=0,PickupBoost=0,Goal=600,GoalSpeed=150,ScorerAssist=100,Save=65,Shot=40,DirectionalTouch=35,ObjectiveBallVel=7.0,KickoffSpeed=4.0,TeamPressure=1.5,DefensiveCover=0.65,DoubleCommit=1.8,PickupBoostZS=8.0,SaveBoost=0.04,Demo=30,Bump=4"
+      "Air=0,FaceBall=0,VelocityPlayerToBall=0,NearestVelocityToBall=0,TeamVelocityToBall=0,StrongTouch=0,TouchAccel=0,VelocityBallToGoal=0,BehindBall=0,TeamSpacing=0,PickupBoost=0,Demo=0,Goal=750,GoalSpeed=120,ScorerAssist=85,Save=28,Shot=18,DirectionalTouch=16,ObjectiveBallVel=6.5,KickoffSpeed=5.5,TeamPressure=1.6,SoloDiscipline=0.55,DefensiveCover=0.45,DoubleCommit=0.9,PickupBoostZS=3.5,SaveBoost=0.06,DemoZS=25,Bump=4"
     ],
     "minutes": [
       10,
+      15,
+      15,
+      15,
+      15,
       15,
       15,
       15,
@@ -83,7 +88,6 @@
     "reference_pool": "training-backup/pool",
     "extra_versions": [
       "checkpoints/3035220582",
-      "checkpoints/3043214022",
       "checkpoints/3137998278"
     ]
   },
@@ -96,97 +100,42 @@
       "train_seconds": 0,
       "steps_per_second": null,
       "screen": {
-        "1v1": 1524.3941853841145,
-        "2v2": 1658.8246744791666,
-        "3v3": 1592.7299886067708,
-        "Ranking": 1591.9829494900175
+        "1v1": 1557.754520670573,
+        "2v2": 1661.5810099283854,
+        "3v3": 1565.3241048177083,
+        "Ranking": 1594.886545138889
       },
       "confirm": {
-        "1v1": 1550.9982645670573,
-        "2v2": 1647.7411743164062,
-        "3v3": 1608.5981160481772,
-        "Ranking": 1602.4458516438801
+        "1v1": 1557.6626200358073,
+        "2v2": 1679.688330078125,
+        "3v3": 1587.0363484700522,
+        "Ranking": 1608.1290995279949
       },
       "promoted": true
-    },
-    {
-      "stage": 1,
-      "start_steps": 3244539846,
-      "steps": 3253200582,
-      "train_seconds": 620.1243360030003,
-      "steps_per_second": 13966.128237802455,
-      "screen": {
-        "1v1": 1474.287284342448,
-        "2v2": 1682.4099161783854,
-        "3v3": 1654.8240519205729,
-        "Ranking": 1603.840417480469
-      },
-      "confirm": {
-        "1v1": 1478.2723002115886,
-        "2v2": 1693.6287740071614,
-        "3v3": 1695.108778889974,
-        "Ranking": 1622.3366177029081
-      },
-      "promoted": true
-    },
-    {
-      "stage": 2,
-      "start_steps": 3253200582,
-      "steps": 3265973958,
-      "train_seconds": 919.2897327320002,
-      "steps_per_second": 13894.831569628563,
-      "screen": {
-        "1v1": 1482.9657430013021,
-        "2v2": 1697.0666341145834,
-        "3v3": 1654.6126790364583,
-        "Ranking": 1611.5483520507812
-      },
-      "confirm": {
-        "1v1": 1490.4104939778647,
-        "2v2": 1716.9391438802083,
-        "3v3": 1676.1507771809895,
-        "Ranking": 1627.8334716796874
-      },
-      "promoted": false
-    },
-    {
-      "stage": 3,
-      "start_steps": 3265973958,
-      "steps": 3278747334,
-      "train_seconds": 922.8789874620006,
-      "steps_per_second": 13840.791884457052,
-      "screen": {
-        "1v1": 1473.2259033203125,
-        "2v2": 1659.9250854492188,
-        "3v3": 1620.7528767903646,
-        "Ranking": 1584.6346218532988
-      },
-      "confirm": null,
-      "promoted": false
     }
   ],
   "best": {
-    "steps": 3253200582,
+    "steps": 3244539846,
     "screen": {
-      "1v1": 1474.287284342448,
-      "2v2": 1682.4099161783854,
-      "3v3": 1654.8240519205729,
-      "Ranking": 1603.840417480469
+      "1v1": 1557.754520670573,
+      "2v2": 1661.5810099283854,
+      "3v3": 1565.3241048177083,
+      "Ranking": 1594.886545138889
     },
     "confirm": {
-      "1v1": 1478.2723002115886,
-      "2v2": 1693.6287740071614,
-      "3v3": 1695.108778889974,
-      "Ranking": 1622.3366177029081
+      "1v1": 1557.6626200358073,
+      "2v2": 1679.688330078125,
+      "3v3": 1587.0363484700522,
+      "Ranking": 1608.1290995279949
     }
   },
   "pending": {
-    "stage": 4,
-    "start_steps": 3278747334,
+    "stage": 1,
+    "start_steps": 3244539846,
     "seconds": 0,
     "trained": false
   },
   "status": "paused",
-  "working_directory": "results/weights1700-v2/campaign",
+  "working_directory": "results/weights1700-v3/campaign",
   "target_ranking": 1700.0
 }
