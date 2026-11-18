@@ -139,6 +139,21 @@
         "Ranking": 1576.243098280165
       },
       "promoted": true
+    },
+    {
+      "stage": 5,
+      "start_steps": 3137998278,
+      "steps": 3165722310,
+      "train_seconds": 1821.807165664,
+      "steps_per_second": 15217.874055235332,
+      "screen": {
+        "1v1": 1459.5196614583333,
+        "2v2": 1619.3451904296876,
+        "3v3": 1561.0714721679688,
+        "Ranking": 1546.6454413519966
+      },
+      "confirm": null,
+      "promoted": false
     }
   ],
   "best": {
@@ -157,8 +172,8 @@
     }
   },
   "pending": {
-    "stage": 5,
-    "start_steps": 3137998278,
+    "stage": 6,
+    "start_steps": 3165722310,
     "seconds": 0,
     "trained": false
   },
