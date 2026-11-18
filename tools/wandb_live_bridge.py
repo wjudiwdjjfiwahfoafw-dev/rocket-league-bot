@@ -26,16 +26,213 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_KEY_FILE = Path('/dev/shm/.wandb_bridge_key')
 TELEMETRY_LABEL_TITLE = '[telemetry] Live W&B metrics feed'
 PAYLOAD_RE = re.compile(r'<!-- WANDB_SNAPSHOT_GZ_B64_START -->\s*([A-Za-z0-9+/=\s]+?)\s*<!-- WANDB_SNAPSHOT_GZ_B64_END -->')
 META_RE = re.compile(r'<!-- WANDB_RELAY_META_START -->\s*(\{.*?\})\s*<!-- WANDB_RELAY_META_END -->', re.DOTALL)
+KEYREQ_RE = re.compile(r'<!-- WANDB_KEYREQ_START -->\s*(\{.*?\})\s*<!-- WANDB_KEYREQ_END -->', re.DOTALL)
+KEYSEAL_RE = re.compile(r'<!-- WANDB_KEYSEAL_START -->\s*(\{.*?\})\s*<!-- WANDB_KEYSEAL_END -->', re.DOTALL)
 # GitHub issue/comment body limit is 65,536 chars; keep comfortable headroom for header + metadata.
 MAX_BODY_B64 = 52_000
+
+
+def _shm_dir() -> Path:
+    shm = Path('/dev/shm')
+    return shm if shm.is_dir() else Path(tempfile.gettempdir())
+
+
+def generate_ephemeral_rsa_keypair() -> tuple[bytes, str, str]:
+    """Generate a one-time 3072-bit RSA keypair in RAM. Returns (priv_pem_bytes, pub_pem_str, key_id)."""
+    with tempfile.TemporaryDirectory(dir=_shm_dir(), prefix='wbk-') as td:
+        os.chmod(td, 0o700)
+        priv_path = Path(td) / 'priv.pem'
+        pub_path = Path(td) / 'pub.pem'
+        subprocess.run(
+            ['openssl', 'genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:3072', '-out', str(priv_path)],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        os.chmod(priv_path, 0o600)
+        subprocess.run(
+            ['openssl', 'pkey', '-in', str(priv_path), '-pubout', '-out', str(pub_path)],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        priv_bytes = priv_path.read_bytes()
+        pub_pem = pub_path.read_text('ascii')
+        priv_path.write_bytes(b'\x00' * len(priv_bytes))
+    key_id = hashlib.sha256(pub_pem.encode('ascii')).hexdigest()[:16]
+    return priv_bytes, pub_pem, key_id
+
+
+def rsa_oaep_seal(pub_pem: str, secret: str) -> str:
+    """Encrypt `secret` under a 3072-bit RSA public key using RSA-OAEP-SHA256; return base64 ciphertext."""
+    with tempfile.TemporaryDirectory(dir=_shm_dir(), prefix='wbs-') as td:
+        os.chmod(td, 0o700)
+        pub_path = Path(td) / 'pub.pem'
+        pub_path.write_text(pub_pem, encoding='ascii')
+        # Verify public key strength (>= 3072-bit RSA) before encrypting.
+        info = subprocess.check_output(
+            ['openssl', 'pkey', '-pubin', '-in', str(pub_path), '-text', '-noout'],
+            text=True, stderr=subprocess.DEVNULL,
+        )
+        if 'Public-Key: (3072 bit)' not in info and 'Public-Key: (4096 bit)' not in info:
+            raise ValueError('Rejected public key with insufficient bit length')
+        ct = subprocess.check_output(
+            ['openssl', 'pkeyutl', '-encrypt', '-pubin', '-inkey', str(pub_path),
+             '-pkeyopt', 'rsa_padding_mode:oaep', '-pkeyopt', 'rsa_oaep_md:sha256',
+             '-pkeyopt', 'rsa_mgf1_md:sha256'],
+            input=secret.encode('utf-8'), stderr=subprocess.DEVNULL,
+        )
+    return base64.b64encode(ct).decode('ascii')
+
+
+def rsa_oaep_open(priv_pem: bytes, sealed_b64: str) -> str:
+    """Decrypt a base64 RSA-OAEP-SHA256 ciphertext using the in-RAM ephemeral private key."""
+    ct = base64.b64decode(sealed_b64)
+    with tempfile.TemporaryDirectory(dir=_shm_dir(), prefix='wbo-') as td:
+        os.chmod(td, 0o700)
+        priv_path = Path(td) / 'priv.pem'
+        priv_path.write_bytes(priv_pem)
+        os.chmod(priv_path, 0o600)
+        try:
+            pt = subprocess.check_output(
+                ['openssl', 'pkeyutl', '-decrypt', '-inkey', str(priv_path),
+                 '-pkeyopt', 'rsa_padding_mode:oaep', '-pkeyopt', 'rsa_oaep_md:sha256',
+                 '-pkeyopt', 'rsa_mgf1_md:sha256'],
+                input=ct, stderr=subprocess.DEVNULL,
+            )
+        finally:
+            priv_path.write_bytes(b'\x00' * len(priv_pem))
+    return pt.decode('utf-8').strip()
+
+
+def _load_local_wandb_key(key_file: Path) -> str:
+    env_val = os.environ.get('WANDB_API_KEY', '').strip()
+    if env_val:
+        return env_val
+    if key_file.is_file():
+        return key_file.read_text(encoding='utf-8').strip()
+    return ''
+
+
+def _verify_active_workflow_run(repo: str, run_id: str, branch: str) -> bool:
+    if not run_id or not str(run_id).isdecimal():
+        return False
+    try:
+        info = gh_api_json('GET', f'actions/runs/{run_id}', repo=repo)
+    except Exception:
+        return False
+    return (
+        info.get('status') == 'in_progress'
+        and info.get('head_branch') == branch
+        and str(info.get('path', '')).endswith('/wandb-live.yml')
+    )
+
+
+def answer_pending_key_requests(repo: str, branch: str, issue_number: int, comments: list[dict],
+                                secret: str, answered: set[str]) -> bool:
+    """Seal `secret` only for a verified in-progress github-actions[bot] workflow run of this branch."""
+    if not secret:
+        return False
+    already_sealed = {}
+    active_reqs = set()
+    for c in comments:
+        body_c = c.get('body') or ''
+        m = KEYSEAL_RE.search(body_c)
+        if m:
+            try:
+                already_sealed[json.loads(m.group(1)).get('key_id', '')] = int(c['id'])
+            except ValueError:
+                pass
+        mr = KEYREQ_RE.search(body_c)
+        if mr:
+            try:
+                active_reqs.add(json.loads(mr.group(1)).get('key_id', ''))
+            except ValueError:
+                pass
+    # Delete any already-consumed sealed replies whose request comment was deleted by the runner.
+    for kid, cid in list(already_sealed.items()):
+        if kid and kid not in active_reqs:
+            try:
+                gh_api_json('DELETE', f'issues/comments/{cid}', repo=repo)
+            except Exception:
+                pass
+    did_seal = False
+    for c in comments:
+        user = c.get('user') or {}
+        if user.get('login') != 'github-actions[bot]' or user.get('type') != 'Bot':
+            continue
+        m = KEYREQ_RE.search(c.get('body') or '')
+        if not m:
+            continue
+        try:
+            req = json.loads(m.group(1))
+        except ValueError:
+            continue
+        key_id = str(req.get('key_id', ''))
+        pub_pem = str(req.get('pub_pem', ''))
+        run_id = str(req.get('run_id', ''))
+        if not key_id or key_id in answered or key_id in already_sealed:
+            continue
+        if hashlib.sha256(pub_pem.encode('ascii')).hexdigest()[:16] != key_id:
+            continue
+        if not _verify_active_workflow_run(repo, run_id, branch):
+            continue
+        sealed_b64 = rsa_oaep_seal(pub_pem, secret)
+        payload = json.dumps({'key_id': key_id, 'run_id': run_id, 'sealed_b64': sealed_b64})
+        body = f"Ephemeral RSA-OAEP handshake reply for `{key_id}`.\n<!-- WANDB_KEYSEAL_START -->\n{payload}\n<!-- WANDB_KEYSEAL_END -->\n"
+        gh_api_json('POST', f'issues/{issue_number}/comments', {'body': body}, repo=repo)
+        answered.add(key_id)
+        did_seal = True
+        print(f'Completed ephemeral RSA-3072-OAEP handshake for verified Actions run {run_id} (key_id={key_id})', flush=True)
+    return did_seal
+
+
+def request_sealed_wandb_key(repo: str, issue_number: int, timeout_s: float = 150.0) -> str | None:
+    """From inside a GitHub Actions runner, acquire WANDB_API_KEY via one-time RSA-3072-OAEP exchange."""
+    run_id = os.environ.get('GITHUB_RUN_ID', '').strip()
+    if not run_id:
+        return None
+    priv_pem, pub_pem, key_id = generate_ephemeral_rsa_keypair()
+    req_comment_id = None
+    seal_comment_id = None
+    try:
+        req_json = json.dumps({'key_id': key_id, 'run_id': run_id, 'pub_pem': pub_pem})
+        body = f"Ephemeral RSA-3072-OAEP handshake request (`{key_id}`, run `{run_id}`).\n<!-- WANDB_KEYREQ_START -->\n{req_json}\n<!-- WANDB_KEYREQ_END -->\n"
+        created = gh_api_json('POST', f'issues/{issue_number}/comments', {'body': body}, repo=repo)
+        req_comment_id = int(created['id'])
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            time.sleep(4.0)
+            comments = gh_api_json('GET', f'issues/{issue_number}/comments?per_page=50', repo=repo)
+            for c in comments:
+                m = KEYSEAL_RE.search(c.get('body') or '')
+                if not m:
+                    continue
+                try:
+                    data = json.loads(m.group(1))
+                except ValueError:
+                    continue
+                if data.get('key_id') == key_id and data.get('sealed_b64'):
+                    seal_comment_id = int(c['id'])
+                    key = rsa_oaep_open(priv_pem, data['sealed_b64'])
+                    if os.environ.get('GITHUB_ACTIONS') == 'true' and key:
+                        print(f'::add-mask::{key}', flush=True)
+                    return key
+        return None
+    finally:
+        priv_pem = b''
+        for cid in (req_comment_id, seal_comment_id):
+            if cid is not None:
+                try:
+                    gh_api_json('DELETE', f'issues/comments/{cid}', repo=repo)
+                except Exception:
+                    pass
 
 
 def campaign_run_id(config, prefix='rlbot'):
@@ -161,6 +358,8 @@ def encode_relay_meta(meta: dict) -> str:
     lines.append(f"- **Run ID**: `{meta.get('run_id', '')}` | **Auth**: `{meta.get('auth_mode', '')}`")
     lines.append(f"- **Last synced step**: `{meta.get('last_step', -1):,}` | **Stages synced**: `{meta.get('stages', [])}`")
     lines.append(f"- **Source**: `{meta.get('source', '')}` | **Updated**: `{meta.get('updated_iso', '')}`")
+    if meta.get('error'):
+        lines.append(f"- **Relay note**: `{meta['error']}`")
     lines.append(f"\n<!-- WANDB_RELAY_META_START -->\n{clean}\n<!-- WANDB_RELAY_META_END -->\n")
     return '\n'.join(lines)
 
@@ -346,13 +545,24 @@ def run_publisher(args):
 
     print(f'Publishing live telemetry for {args.campaign} -> {repo}#{issue_number} (interval={args.interval}s)', flush=True)
     last_digest = None
+    answered_keys: set[str] = set()
     while True:
         state_status = 'running'
+        relay_ready = False
         try:
             snap = read_campaign_snapshot(args.campaign, status_url=status_url)
             state_status = (snap.get('state') or {}).get('status', 'running')
-            _, relay_meta = find_relay_meta_on_issue(repo, issue_number)
-            # Only trim below steps already confirmed synced by the cloud relay when needed.
+            comments = gh_api_json('GET', f'issues/{issue_number}/comments?per_page=50', repo=repo)
+            secret = _load_local_wandb_key(args.key_file)
+            if secret:
+                answer_pending_key_requests(repo, branch, issue_number, comments, secret, answered_keys)
+                # Clean up any leftover consumed keyseal comments older than our latest handshake.
+            relay_meta = None
+            for c in reversed(comments):
+                relay_meta = decode_relay_meta(c.get('body') or '')
+                if relay_meta is not None:
+                    break
+            relay_ready = bool(relay_meta and relay_meta.get('run_url'))
             body, included = encode_snapshot_body(snap)
             digest = hashlib.sha256(json.dumps({
                 'rows_len': len(snap['rows']),
@@ -399,7 +609,8 @@ def run_publisher(args):
             print(f'Telemetry publish warning: {exc}', flush=True)
             if args.once:
                 raise
-        time.sleep(args.interval)
+        # Poll faster (5s) while waiting for initial relay handshake, then relax to --interval.
+        time.sleep(args.interval if relay_ready else min(5.0, args.interval))
 
 
 def load_best_remote_snapshot(args, repo: str | None, gh_token: str | None) -> tuple[dict | None, str]:
@@ -503,20 +714,29 @@ def run_relay(args):
         raise RuntimeError('Timed out waiting for telemetry snapshot')
 
     has_api_key = bool(os.environ.get('WANDB_API_KEY', '').strip())
+    auth_mode = 'repo_secret' if has_api_key else 'none'
+    if not has_api_key and repo and args.issue:
+        print('WANDB_API_KEY secret unset; requesting one-time RSA-3072-OAEP sealed key from sandbox...', flush=True)
+        sealed_key = request_sealed_wandb_key(repo, args.issue, timeout_s=150.0)
+        if sealed_key:
+            os.environ['WANDB_API_KEY'] = sealed_key
+            has_api_key = True
+            auth_mode = 'ephemeral_rsa_oaep'
     if not has_api_key and not args.allow_anonymous:
-        raise RuntimeError('WANDB_API_KEY is not set (add it as a GitHub Actions secret or pass --allow-anonymous)')
+        raise RuntimeError('WANDB_API_KEY is not set (add it as a GitHub Actions secret or keep sandbox publisher active)')
+    if not has_api_key:
+        auth_mode = 'anonymous'
 
-    auth_mode = 'api_key' if has_api_key else 'anonymous'
     state = snap.get('state') or {}
     config = state.get('config') or {}
     base_run_id = args.run_id or snap.get('run_id') or campaign_run_id(config)
-    # Keep anonymous and authenticated run IDs distinct so switching to WANDB_API_KEY backfills cleanly.
     run_id = base_run_id if has_api_key else f'{base_run_id}-anon'
     run_name = args.run_name or f'weights1700-{config.get("parent_steps", "live")}'
     project = args.project or os.environ.get('WANDB_PROJECT') or 'rocket-league-ggl'
     entity = (args.entity or os.environ.get('WANDB_ENTITY') or '').strip() or None
     group = args.group or os.environ.get('WANDB_RUN_GROUP') or 'weights-1700'
 
+    comment_id = None
     args.work_dir.mkdir(parents=True, exist_ok=True)
     init_kwargs = dict(
         mode='online',
@@ -541,7 +761,29 @@ def run_relay(args):
     if not has_api_key:
         init_kwargs['anonymous'] = 'must'
 
-    run = wandb.init(**init_kwargs)
+    try:
+        if has_api_key:
+            wandb.login(key=os.environ['WANDB_API_KEY'], relogin=True)
+        run = wandb.init(**init_kwargs)
+    except Exception as exc:
+        # Scrub any potential credential fragment before reporting status.
+        msg = type(exc).__name__ + ': ' + str(exc)[:200]
+        cur_key = os.environ.get('WANDB_API_KEY', '')
+        if cur_key:
+            msg = msg.replace(cur_key, '[REDACTED]')
+        if repo and args.issue:
+            post_relay_meta_comment(repo, args.issue, None, {
+                'run_url': '',
+                'run_id': run_id,
+                'project': project,
+                'auth_mode': auth_mode,
+                'last_step': -1,
+                'stages': [],
+                'source': source,
+                'error': msg,
+                'updated_iso': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime()),
+            })
+        raise
     run.define_metric('Total Timesteps')
     run.define_metric('*', step_metric='Total Timesteps')
     run_url = str(run.url or '')
@@ -554,7 +796,6 @@ def run_relay(args):
 
     last_step = int(run.summary.get('Stream/Last Timesteps', -1))
     logged_stages = {int(s) for s in (run.summary.get('Stream/Stages') or [])}
-    comment_id = None
     last_comment_push = 0.0
     idle_since = None
 
@@ -636,6 +877,8 @@ def main():
     pub.add_argument('--port', type=int, default=8080)
     pub.add_argument('--interval', type=float, default=20.0)
     pub.add_argument('--status-file', type=Path, help='Local JSON file recording live W&B bridge status/URL')
+    pub.add_argument('--key-file', type=Path, default=DEFAULT_KEY_FILE,
+                     help='RAM-only path holding optional WANDB_API_KEY for ephemeral RSA-OAEP relay handshake')
     pub.add_argument('--once', action='store_true')
 
     rel = sub.add_parser('relay', help='Cloud/external side: stream live telemetry into online W&B')

@@ -141,6 +141,15 @@ class WandbLiveBridgeTest(unittest.TestCase):
         parsed = bridge.decode_relay_meta(bridge.encode_relay_meta(meta))
         self.assertEqual(parsed, meta)
 
+    def test_ephemeral_rsa_3072_oaep_round_trip(self):
+        priv_pem, pub_pem, key_id = bridge.generate_ephemeral_rsa_keypair()
+        self.assertEqual(len(key_id), 16)
+        sample = 'wandb_v1_unitTestPlaceholderOnly_0123456789abcdef'
+        sealed = bridge.rsa_oaep_seal(pub_pem, sample)
+        self.assertNotIn(sample, sealed)
+        opened = bridge.rsa_oaep_open(priv_pem, sealed)
+        self.assertEqual(opened, sample)
+
 
 if __name__ == '__main__':
     unittest.main()

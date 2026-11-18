@@ -31,10 +31,10 @@ on:
         required: false
         default: '330'
       require_api_key:
-        description: 'Fail instead of falling back to claimable anonymous W&B run if WANDB_API_KEY is unset'
+        description: 'Require authenticated WANDB_API_KEY (via repo secret or ephemeral RSA-OAEP handshake)'
         required: false
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -103,7 +103,7 @@ jobs:
           ISSUE_NUM: ${{ steps.discover.outputs.issue }}
           POLL_SECONDS: ${{ inputs.poll_seconds || '15' }}
           MAX_MINUTES: ${{ inputs.max_minutes || '330' }}
-          REQUIRE_KEY: ${{ inputs.require_api_key || 'false' }}
+          REQUIRE_KEY: ${{ inputs.require_api_key || 'true' }}
         run: |
           ARGS=(
             relay
