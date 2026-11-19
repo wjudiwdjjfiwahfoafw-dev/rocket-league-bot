@@ -68,6 +68,19 @@ def seconds_until_backup_due(destination, status, min_interval, now=None):
     return max(0.0, (last_ts + min_interval) - cur)
 
 
+def verify_frozen_versions(versions, state):
+    """Refuse to publish a snapshot in which a saved old policy was rewritten after creation."""
+    expected = {int(step): files for step, files in (state.get('frozen_versions') or {}).items()}
+    if not expected:
+        return
+    for version in versions:
+        step = int(version.name)
+        files = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                 for p in sorted(version.iterdir()) if p.is_file()}
+        if step in expected and files != expected[step]:
+            raise RuntimeError(f'Policy version {step} changed after creation; refusing backup')
+
+
 def snapshot_layout(campaign, state, latest):
     """Return only policy-model snapshot sources for the saved campaign format."""
     policy_pool = campaign / 'learner/policy_versions'
@@ -78,6 +91,7 @@ def snapshot_layout(campaign, state, latest):
         expected = int(state['runtime_overrides'].get('opponent_pool_size', 10))
         if len(versions) != expected:
             raise RuntimeError(f'Evolving policy pool has {len(versions)} entries; expected {expected}')
+        verify_frozen_versions(versions, state)
         return [latest, policy_pool], ['learner/' + latest.name, 'learner/policy_versions'], True
     return ([latest, policy_pool, campaign / 'pool', campaign / 'best' / str(state['best']['steps'])],
             ['learner/' + latest.name, 'learner/policy_versions', 'pool',
