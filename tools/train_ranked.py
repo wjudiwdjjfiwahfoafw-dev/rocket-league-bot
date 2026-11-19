@@ -238,6 +238,12 @@ def score(args, path, seed, rounds, pool_hash, env, logdir, write_back=False):
     weights_sha = policy_digest(path)
     start = checkpoint_elo(path)
     cached = read(out) if out.exists() else None
+    if cached is not None:
+        try:
+            validate_execution(cached)
+        except ValueError:
+            # The rating protocol changed since this result was cached: rate the checkpoint again.
+            cached = None
     # A cached result stays valid either before or after its Elo was written back into the policy.
     cache_valid = cached is not None and all(cached.get(key) == value for key, value in (
         ('policy_sha256', weights_sha), ('pool_sha256', pool_hash),

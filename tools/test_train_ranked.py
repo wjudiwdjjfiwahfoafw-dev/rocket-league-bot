@@ -420,6 +420,18 @@ class RankingTests(unittest.TestCase):
             # Reusing the cache must not require the discarded rating series.
             with patch.object(ranked, 'run', side_effect=AssertionError('cache was not reused')):
                 self.assertEqual(ranked.score(args, ckpt, 1009, 2, pool_digest(pool), {}, root), ends)
+            # A result cached under an older protocol is rated again instead of failing validation.
+            stale = ranked.read(out / 'eval/1200-1009-2.json')
+            stale['settings'] = {'deterministic': False, 'policy_temperature': 1.0}
+            ranked.write(out / 'eval/1200-1009-2.json', stale)
+            calls = []
+            def again(cmd, env, log, heartbeat=None):
+                calls.append(cmd)
+                native(cmd, env, log)
+            with patch.object(ranked, 'run', again):
+                self.assertEqual(ranked.score(args, ckpt, 1009, 2, pool_digest(pool), {}, root), ends)
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(ranked.read(out / 'eval/1200-1009-2.json')['settings']['fuzzed_kickoffs'])
 
     def test_old_policy_versions_are_immutable(self):
         with tempfile.TemporaryDirectory() as tmp:
