@@ -87,7 +87,7 @@ class WandbLiveBridgeTest(unittest.TestCase):
             self._make_campaign(root, num_rows=6)
             snap = bridge.read_campaign_snapshot(root)
             self.assertEqual(len(snap['rows']), 6)
-            self.assertTrue(snap['run_id'].startswith('rlbot-v3-'))
+            self.assertTrue(snap['run_id'].startswith('rlbot-v4-'))
             body, included = bridge.encode_snapshot_body(snap)
             self.assertEqual(included, 6)
             self.assertLess(len(body), 60_000)
@@ -147,6 +147,13 @@ class WandbLiveBridgeTest(unittest.TestCase):
         step, stages = bridge.load_relay_cursor(summary, {'run_id': 'other', 'last_step': 900}, 'run-1')
         self.assertEqual(step, -1)
         self.assertEqual(stages, set())
+
+        class NoContains(dict):
+            def __contains__(self, key):
+                raise AssertionError('relay cursor migration must not depend on summary membership')
+        summary = NoContains({'Stream/Last Timesteps': 5, 'Stream/Stages': [0]})
+        self.assertEqual(bridge.load_relay_cursor(summary), (5, {0}))
+        self.assertEqual(summary, {})
 
     def test_relay_meta_round_trip(self):
         meta = {

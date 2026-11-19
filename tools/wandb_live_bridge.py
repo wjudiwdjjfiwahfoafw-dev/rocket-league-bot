@@ -234,8 +234,8 @@ def request_sealed_wandb_key(repo: str, issue_number: int, timeout_s: float = 15
                     pass
 
 
-def campaign_run_id(config, prefix='rlbot-v3'):
-    """Deterministic clean-schema W&B run ID; v3 excludes transport and Live-prefixed series."""
+def campaign_run_id(config, prefix='rlbot-v4'):
+    """Deterministic clean-schema W&B run ID; v4 excludes transport and Live-prefixed series."""
     ident = {
         'base': config.get('base'),
         'parent_steps': config.get('parent_steps'),
@@ -684,8 +684,10 @@ def load_relay_cursor(summary, relay_meta=None, expected_run_id=None):
     legacy_step = int(summary.get('Stream/Last Timesteps', -1) or -1)
     legacy_stages = {int(s) for s in (summary.get('Stream/Stages') or [])}
     for key in ('Stream/Last Timesteps', 'Stream/Stages', 'Stream/Source'):
-        if key in summary:
+        try:
             del summary[key]
+        except (KeyError, TypeError, AttributeError):
+            pass
 
     if relay_meta and (expected_run_id is None or relay_meta.get('run_id') == expected_run_id):
         last_step = max(legacy_step, int(relay_meta.get('last_step', -1) or -1))
