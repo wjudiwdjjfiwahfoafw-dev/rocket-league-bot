@@ -165,11 +165,11 @@ def minutes_plan(total, pilot, block):
 
 
 def budget_for_stage(plan, stage, continuous=False, block=15):
-    """Return a stage budget, or None once a finite campaign's plan is exhausted."""
+    """Return a cycle budget; continuous runs repeat one fixed block after the parent rating."""
+    if continuous:
+        return 0 if stage == 0 else block
     budgets = [0, *plan]  # stage 0 rates the parent; training stages follow it
-    if stage < len(budgets):
-        return budgets[stage]
-    return block if continuous else None
+    return budgets[stage] if stage < len(budgets) else None
 
 
 def promote(screen, confirm, best):
@@ -356,8 +356,11 @@ def campaign(args):
                        '--max-minutes', max(0.02, minutes - previous / 60)]
                 if int(newest(learner).name) == int(base.name):
                     cmd.append('--new-run')
-                stage_label = f'{i}/{len(plan)}' if i <= len(plan) else f'{i}/∞'
-                print(f'Stage {stage_label}: training from {newest(learner).name} ({minutes} min budget)', flush=True)
+                if runtime_overrides.get('continuous', False):
+                    stage_label = f'Cycle {i} (continuous)'
+                else:
+                    stage_label = f'Stage {i}/{len(plan)}'
+                print(f'{stage_label}: training from {newest(learner).name} ({minutes} min budget)', flush=True)
                 try:
                     run(cmd, env, logdir / f'train-{i}.log', heartbeat)
                 finally:
@@ -399,7 +402,9 @@ def campaign(args):
                     shutil.rmtree(p)
             if wb is not None:
                 ranked_wandb.log_stage(wb, out, entry, state['best']['steps'])
-            print(f'Stage {i} complete. Best: {state["best"]["steps"]}; latest: {steps}', flush=True)
+            label = (f'Cycle {i} complete; starting next cycle' if runtime_overrides.get('continuous', False)
+                     else f'Stage {i} complete')
+            print(f'{label}. Best: {state["best"]["steps"]}; latest: {steps}', flush=True)
             if (not runtime_overrides.get('continuous', False) and
                     getattr(args, 'stop_on_target', False) and
                     getattr(args, 'target_ranking', None) is not None and i > 0):

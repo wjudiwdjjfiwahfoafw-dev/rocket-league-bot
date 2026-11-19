@@ -36,11 +36,15 @@ class RankingTests(unittest.TestCase):
         self.assertEqual(minutes_plan(3, 6, 30), [3])
 
     def test_continuous_campaign_repeats_regular_blocks_after_finite_plan(self):
-        plan = [10, 15, 15]
+        plan = [10, 15, 5]
         self.assertEqual(ranked.budget_for_stage(plan, 0), 0)
-        self.assertEqual(ranked.budget_for_stage(plan, 3), 15)
+        self.assertEqual(ranked.budget_for_stage(plan, 1), 10)
+        self.assertEqual(ranked.budget_for_stage(plan, 3), 5)
         self.assertIsNone(ranked.budget_for_stage(plan, 4))
-        self.assertEqual(ranked.budget_for_stage(plan, 4, continuous=True, block=15), 15)
+        # Continuous mode discards the pilot/final short-block schedule and repeats one regular block.
+        self.assertEqual(ranked.budget_for_stage(plan, 0, continuous=True, block=15), 0)
+        self.assertEqual(ranked.budget_for_stage(plan, 1, continuous=True, block=15), 15)
+        self.assertEqual(ranked.budget_for_stage(plan, 3, continuous=True, block=15), 15)
         self.assertEqual(ranked.budget_for_stage(plan, 10_000, continuous=True, block=15), 15)
 
     def test_both_seeds_and_margin_required(self):
