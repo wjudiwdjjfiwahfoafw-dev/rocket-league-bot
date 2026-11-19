@@ -10,7 +10,8 @@ import unittest
 from unittest.mock import patch
 
 import train_ranked as ranked
-from train_ranked import MODES, checked_ranking, minutes_plan, pool_digest, promote
+from train_ranked import (MODES, checked_ranking, endpoint_ratings, frozen_versions, minutes_plan,
+                             pool_digest, promote, sync_policy_versions, verify_frozen_versions)
 
 
 class RankingTests(unittest.TestCase):
@@ -271,6 +272,80 @@ class RankingTests(unittest.TestCase):
             train_cmd = train_commands[0]
             self.assertEqual(train_cmd[train_cmd.index('--max-versions') + 1], '10')
             self.assertEqual(train_cmd[train_cmd.index('--ts-per-version') + 1], '9000000000000000')
+
+    def test_saved_evaluations_keep_current_elo_without_history(self):
+        result = dict(ratings={m: {'start': 10.0, 'series': [1.0, 2.0], 'average': 1.5,
+                                   'average_rounds': 2, 'end': value}
+                               for m, value in zip((*MODES, 'Ranking'), (1500.0, 1500.0, 1500.0, 1500.0))})
+        self.assertEqual(endpoint_ratings(result), {m: 1500.0 for m in (*MODES, 'Ranking')})
+        # Already-compacted results are accepted unchanged, so cached evaluations stay reusable.
+        compact = dict(result, ratings={m: 1500.0 for m in (*MODES, 'Ranking')})
+        self.assertEqual(endpoint_ratings(compact), {m: 1500.0 for m in (*MODES, 'Ranking')})
+
+    def test_eval_cache_stores_endpoint_elo_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out, ckpt = root / 'campaign', root / '1200'
+            (out / 'eval').mkdir(parents=True)
+            ckpt.mkdir()
+            for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
+                (ckpt / name).write_bytes(b'weights')
+            pool = out / 'pool'
+            (pool / '100').mkdir(parents=True)
+            ref = {m: 1500.0 for m in MODES}
+            ranked.write(pool / '100/STATS.json', {'skill_ratings': ref})
+            bot = root / 'GigaLearnBot'
+            bot.touch()
+            args = argparse.Namespace(bot=bot, out=out, threads=1, rounds=2)
+            ends = {m: value for m, value in zip(MODES, (1600.0, 1610.0, 1620.0))}
+            ends['Ranking'] = 1610.0
+
+            def native(cmd, env, log, heartbeat=None):
+                ranked.write(cmd[cmd.index('--rate-out') + 1], dict(
+                    anchored=True, seed=1009, rounds=2, checkpoint_timesteps=1200,
+                    settings=dict(deterministic=False, policy_temperature=1.0),
+                    ratings={m: {'start': value - 950.0, 'series': [value - 10.0, value],
+                                 'average': value - 5.0, 'average_rounds': 2, 'end': value}
+                             for m, value in ends.items()},
+                    opponents=[dict(timesteps=100, rounds=2, ratings=ref)],
+                    mode_goals={m: {'for': 3, 'against': 1} for m in MODES}))
+
+            with patch.object(ranked, 'run', native):
+                ratings = ranked.score(args, ckpt, 1009, 2, pool_digest(pool), {}, root)
+            self.assertEqual(ratings, ends)
+            saved = ranked.read(out / 'eval/1200-1009-2.json')
+            self.assertEqual(saved['ratings'], ends)
+            self.assertTrue(all(isinstance(v, float) for v in saved['ratings'].values()))
+            # Reusing the cache must not require the discarded rating series.
+            with patch.object(ranked, 'run', side_effect=AssertionError('cache was not reused')):
+                self.assertEqual(ranked.score(args, ckpt, 1009, 2, pool_digest(pool), {}, root), ends)
+
+    def test_old_policy_versions_are_immutable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pool, trainer = root / 'pool', root / 'learner/policy_versions'
+            for step in (100, 200):
+                version = pool / str(step)
+                version.mkdir(parents=True)
+                for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt', 'STATS.json'):
+                    (version / name).write_bytes(f'{step}-{name}'.encode())
+                ranked.write(version / 'STATS.json', {'skill_ratings': {m: 1500.0 for m in MODES}})
+            manifest = frozen_versions(pool)
+            shutil.copytree(pool, trainer)
+            untouched = {p: (p.stat().st_ino, p.stat().st_mtime_ns)
+                         for p in trainer.rglob('*') if p.is_file()}
+            # Identical content: the trainer copy is left byte-for-byte and file-for-file alone.
+            self.assertFalse(sync_policy_versions(pool, trainer))
+            self.assertEqual(untouched, {p: (p.stat().st_ino, p.stat().st_mtime_ns)
+                                         for p in trainer.rglob('*') if p.is_file()})
+            self.assertEqual(verify_frozen_versions(pool, manifest), manifest)
+            # FIFO eviction removes whole versions; surviving versions must still match.
+            shutil.rmtree(pool / '100')
+            self.assertEqual(set(verify_frozen_versions(pool, manifest)), {200})
+            # A re-rated old STATS.json is exactly the mutation the campaign must reject.
+            ranked.write(pool / '200/STATS.json', {'skill_ratings': {m: 1600.0 for m in MODES}})
+            with self.assertRaises(RuntimeError):
+                verify_frozen_versions(pool, manifest)
 
 
 if __name__ == '__main__':

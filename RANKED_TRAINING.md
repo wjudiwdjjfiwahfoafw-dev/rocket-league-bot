@@ -37,16 +37,23 @@ python3 tools/train_ranked.py \
 `Rating/Ranking = (1v1 Elo + 2v2 Elo + 3v3 Elo) / 3` using native sampled actions at softmax temperature `1.0` (`deterministic=False`, `policy_temperature=1.0`).
 
 - **Frozen opponent pool:** 5 immutable left-mirrored policies in `training-backup/pool/` (SHA-256 `aa048b453da50d8c7c96913692d3e4d70bd141b5247cbd6519fe11589539d81c`).
-- **Fixtures:** Balanced across all opponents and both team colors, 36 arenas (12 per mode), `K=5` per goal (only candidate Elo updates); reported rating averages the final 75% of rounds.
+- **Fixtures:** Balanced across all opponents and both team colors, 36 arenas (12 per mode), `K=5` per goal (only candidate Elo updates); the reported rating is the exact endpoint of the final rated round.
 - **Promotion gate:** Screen on seed `1009` (`40` rounds); if above current best screen, confirm on seed `2003` (`80` rounds). Promotes only when both matching-seed scores improve and their mean gain is at least `+8.0` Elo.
 - **Held-out audit:** Evaluated once at campaign completion (`80` rounds on the predeclared `--audit-seed`, never used for selection).
 - **Cache integrity:** Cached `eval/*.json` entries fingerprint `POLICY.lt`, `SHARED_HEAD.lt`, and `SHARED_HEAD_SLOTS.lt` by SHA-256 and validate pool digest and temperature-1 sampled execution.
+- **Current Elo only:** A saved result stores the endpoint Elo of each mode (`1v1`, `2v2`, `3v3`, `Ranking`) and nothing else. The per-round rating series, session start and averaged Elo are discarded, so checkpoint JSON stays a compact record of the current rating instead of a rating history.
 
 ## Evolving old-policy pool
 
 `--evolving-opponents` migrates/resumes a campaign with a single shared set of 10 historical policies for both `--train-vs-old`/skill matches and anchored evaluation. The initial set is sampled evenly across all available prior policy-version timestamps so it spans the historical range. Native automatic policy saving is effectively disabled; only the campaign's promotion gate changes the set.
 
 After each training block, the candidate is rated against all ten opponents on the screen and confirmation seeds. It is added only if its raw endpoint `Ranking` is at least 50 Elo above the strongest opponent on both evaluations. On promotion it enters the set and the oldest timestamp is evicted. The incumbent is re-rated whenever the pool changes so comparisons stay on the same pool-specific scale. Pool membership, digest, generation, and strongest-opponent margin are recorded in campaign history. The threshold and pool size are configurable with `--promotion-margin` and `--opponent-pool-size`.
+
+### Immutable old policies
+
+Every saved policy version is written exactly once, when it is created: its weights plus a small `STATS.json` holding only its current Elo (`skill_ratings`) and mirror flag. Nothing rewrites an existing version afterwards — no Elo updates from later skill matches, no metadata refreshes — so old policy folders stay byte-identical and backup commits stop churning. Ratings that move in memory during a run are intentionally not persisted.
+
+`train_ranked.py` pins a SHA-256 manifest of every version (`frozen_versions` in `state.json`), re-checks it at each cycle boundary, and compares the trainer's `learner/policy_versions/` copy against the pool after every training block. Any re-rated or re-annotated old version aborts the cycle instead of being silently accepted. Identical copies are never recopied, and FIFO eviction only removes whole versions.
 
 In this mode, GitHub `training-backup/` stores only the latest full model checkpoint, the exact old-policy set under `learner/policy_versions/`, and the small state/manifest metadata needed to verify and resume; it does not duplicate the pool, best model, evaluation cache, or training metric logs. Local campaign history/metrics remain in `results/...`.
 

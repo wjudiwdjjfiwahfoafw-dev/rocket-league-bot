@@ -70,6 +70,36 @@ def policy_versions(root):
                   key=lambda p: int(p.name))
 
 
+def file_hashes(path):
+    return {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(path.iterdir()) if p.is_file()}
+
+
+def frozen_versions(root):
+    """Content manifest of every saved policy version. A version may never change after creation."""
+    return {int(v.name): file_hashes(v) for v in policy_versions(root)}
+
+
+def verify_frozen_versions(root, expected):
+    """Fail if any still-present old version differs from its creation-time manifest."""
+    current = frozen_versions(root)
+    expected = {int(steps): files for steps, files in expected.items()}
+    changed = [steps for steps, files in expected.items()
+               if steps in current and current[steps] != files]
+    if changed:
+        raise RuntimeError(f'Saved policy version(s) {changed} changed after creation '
+                           '(no Elo or metadata updates are allowed)')
+    return current
+
+
+def sync_policy_versions(pool, destination):
+    """Copy the pool into the trainer only when content differs; never touch identical files."""
+    if destination.is_dir() and frozen_versions(destination) == frozen_versions(pool):
+        return False
+    replace_policy_pool(pool, destination)
+    return True
+
+
 def diverse_versions(source, count):
     """Select evenly spaced checkpoints so the seed pool spans the full historical range."""
     versions = policy_versions(source)
@@ -217,8 +247,19 @@ def score(args, path, seed, rounds, pool_hash, env, logdir):
         raise ValueError('Frozen pool changed during campaign')
     ratings = checked_ranking(result, args.out / 'pool')
     if not cache_valid:
+        # A cached checkpoint result is a record, not a rating journal: keep the current Elo only.
+        result['ratings'] = ratings
         write(out, result)
     print(f'{path.name} seed {seed}: {ratings}', flush=True)
+    return ratings
+
+
+def endpoint_ratings(result):
+    """Keep only the current (endpoint) Elo per mode; rating series and averages are discarded."""
+    ratings = {}
+    for mode in (*MODES, 'Ranking'):
+        value = result['ratings'][mode]
+        ratings[mode] = float(value['end'] if isinstance(value, dict) else value)
     return ratings
 
 
@@ -234,15 +275,12 @@ def checked_ranking(result, pool):
             raise ValueError('Unbalanced fixtures or opponent rating drift')
     # Report the exact endpoint Elo produced by the final rated round, never a smoothed
     # average across the rating session. The per-mode endpoint values are preserved verbatim.
-    ratings = {m: result['ratings'][m]['end'] for m in MODES}
-    ratings['Ranking'] = result['ratings']['Ranking']['end']
+    ratings = endpoint_ratings(result)
     if not math.isclose(ratings['Ranking'], sum(ratings[m] for m in MODES) / len(MODES), abs_tol=1e-5):
         raise ValueError('Ranking endpoint is not the three-mode endpoint mean')
     for m in MODES:
         if sum(result['mode_goals'].get(m, {}).values()) <= 0:
             raise ValueError(f'No goals in {m}; cannot select a checkpoint')
-    if not math.isclose(ratings['Ranking'], result['ratings']['Ranking']['end'], abs_tol=1e-5):
-        raise ValueError('Ranking endpoint differs from the final raw rating value')
     return ratings
 
 
@@ -379,6 +417,11 @@ def campaign(args):
     state = read(statefile)
     if config != state['config'] or pool_digest(out / 'pool') != state['pool_sha256']:
         raise ValueError('Campaign settings or frozen pool changed. Use the original settings or a fresh --out.')
+    # Old policies are immutable records: pin every version's files once and re-verify them at
+    # each cycle boundary, so no later save can re-rate or re-annotate an existing version.
+    state.setdefault('frozen_versions', frozen_versions(out / 'pool'))
+    verify_frozen_versions(out / 'pool', state['frozen_versions'])
+    write(statefile, state)
     existing_runtime = state.setdefault('runtime_overrides', {})
     want_evolving = bool(getattr(args, 'evolving_opponents', False) or existing_runtime.get('evolving_opponents'))
     if want_evolving:
@@ -504,7 +547,7 @@ def campaign(args):
             prior_wall = float(pending.get('wall_seconds', pending.get('seconds', 0)) or 0.0)
             if minutes and not pending['trained']:
                 if runtime_overrides.get('evolving_opponents', False):
-                    replace_policy_pool(out / 'pool', learner / 'policy_versions')
+                    sync_policy_versions(out / 'pool', learner / 'policy_versions')
                 state['status'] = 'training'
                 write(statefile, state)
                 start, previous = time.monotonic(), pending['seconds']
@@ -539,6 +582,16 @@ def campaign(args):
             steps = int(ckpt.name)
             if minutes and steps <= pending['start_steps']:
                 raise ValueError('Training did not advance')
+            versions_verified = False
+            if runtime_overrides.get('evolving_opponents', False):
+                # Prove the trainer neither re-rated nor re-annotated any old policy version.
+                verify_frozen_versions(out / 'pool', state['frozen_versions'])
+                trainer_versions = verify_frozen_versions(learner / 'policy_versions',
+                                                          state['frozen_versions'])
+                if set(trainer_versions) != {int(s) for s in state['frozen_versions']}:
+                    raise RuntimeError('Trainer policy versions do not match the frozen pool')
+                versions_verified = True
+                print(f'Frozen policy versions verified unchanged ({len(trainer_versions)})', flush=True)
             pool_steps_before = [int(p.name) for p in policy_versions(out / 'pool')]
             pool_hash_before = state['pool_sha256']
             screen = evaluate(ckpt, SCREEN, args.rounds)
@@ -572,6 +625,7 @@ def campaign(args):
                     runtime_overrides['pool_generation'] = int(runtime_overrides.get('pool_generation', 0)) + 1
                     runtime_overrides['pool_steps'] = [int(p.name) for p in policy_versions(out / 'pool')]
                     state['pool_sha256'] = pool_digest(out / 'pool')
+                    state['frozen_versions'] = frozen_versions(out / 'pool')
             seconds = pending['seconds']
             wall_seconds = prior_wall + (time.monotonic() - stage_wall_start)
             delta_steps = steps - pending['start_steps']
@@ -588,7 +642,8 @@ def campaign(args):
                          strongest_opponent_steps=strongest_version,
                          opponent_pool_promoted=pool_promoted,
                          opponent_pool_margin=float(runtime_overrides['promotion_margin'])
-                         if runtime_overrides.get('evolving_opponents', False) else None)
+                         if runtime_overrides.get('evolving_opponents', False) else None,
+                         old_versions_verified=versions_verified)
             state['history'].append(entry)
             state['pending'] = None
             write(statefile, state)
