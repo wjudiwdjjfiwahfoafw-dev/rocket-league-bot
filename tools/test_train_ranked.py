@@ -270,7 +270,7 @@ class RankingTests(unittest.TestCase):
                              {p.name for p in ranked.policy_versions(out / 'learner/policy_versions')})
             train_cmd = train_commands[0]
             self.assertEqual(train_cmd[train_cmd.index('--max-versions') + 1], '10')
-            self.assertEqual(train_cmd[train_cmd.index('--ts-per-version') + 1], '9223372036854775807')
+            self.assertEqual(train_cmd[train_cmd.index('--ts-per-version') + 1], '9000000000000000')
 
 
 if __name__ == '__main__':

@@ -519,7 +519,7 @@ def campaign(args):
                 if runtime_overrides.get('evolving_opponents', False):
                     # Do not let the native saver append unqualified policies: only the outer
                     # evaluation gate may change this ten-policy training/rating pool.
-                    cmd.extend(['--ts-per-version', '9223372036854775807',
+                    cmd.extend(['--ts-per-version', '9000000000000000',
                                 '--max-versions', str(runtime_overrides['opponent_pool_size'])])
                 if int(newest(learner).name) == int(base.name):
                     cmd.append('--new-run')
