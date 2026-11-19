@@ -93,6 +93,44 @@ class MetricReceiverThroughputTests(unittest.TestCase):
                     else:
                         metric_receiver.os.environ[k] = v
 
+    def test_rating_events_are_logged_exactly_and_never_averaged(self):
+        class FakeRun:
+            def __init__(self):
+                self.rows = []
+                self.finished = False
+
+            def log(self, payload):
+                self.rows.append(dict(payload))
+
+            def finish(self):
+                self.finished = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_values = {k: metric_receiver.os.environ.get(k) for k in
+                          ('GGL_METRICS_DIR', 'GGL_METRICS_EVERY', 'GGL_WANDB', 'GGL_WANDB_EVERY')}
+            try:
+                metric_receiver.os.environ.update(GGL_METRICS_DIR=tmp, GGL_METRICS_EVERY='50',
+                                                  GGL_WANDB='0', GGL_WANDB_EVERY='50')
+                metric_receiver.init(sys.executable, 'proj', 'grp', 'run', None)
+                fake = FakeRun()
+                metric_receiver.wandb_run = fake
+                for i, elo in enumerate((1512.25, 1498.75, 1530.5), 1):
+                    metric_receiver.add_metrics({'Total Timesteps': i * 1000,
+                                                 'Collected Timesteps': 1000,
+                                                 'Player/Speed': float(i),
+                                                 'Rating/1v1': elo})
+                self.assertEqual([row['Rating/1v1'] for row in fake.rows],
+                                 [1512.25, 1498.75, 1530.5])
+                self.assertEqual([row['Total Timesteps'] for row in fake.rows], [1000, 2000, 3000])
+            finally:
+                metric_receiver.wandb_run = None
+                metric_receiver.finish()
+                for key, value in old_values.items():
+                    if value is None:
+                        metric_receiver.os.environ.pop(key, None)
+                    else:
+                        metric_receiver.os.environ[key] = value
+
     def test_overall_sps_includes_all_inter_iteration_overhead(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_dir = metric_receiver.os.environ.get('GGL_METRICS_DIR')

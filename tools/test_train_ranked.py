@@ -31,6 +31,49 @@ class RankingTests(unittest.TestCase):
             (root / 'POLICY.lt').write_bytes(b'changed without changing timestep')
             self.assertNotEqual(before, ranked.policy_digest(root))
 
+    def test_diverse_pool_spans_historical_versions_and_fifo_promotes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, pool, candidate = root / 'source', root / 'pool', root / '1200'
+            source.mkdir()
+            for step in range(100, 1200, 100):
+                version = source / str(step)
+                version.mkdir()
+                for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
+                    (version / name).write_bytes(f'{step}-{name}'.encode())
+                ranked.write(version / 'STATS.json', {'skill_ratings': {m: 1500 + step / 100 for m in MODES}})
+            ranked.seed_policy_pool(source, pool, 10)
+            chosen = [int(p.name) for p in ranked.policy_versions(pool)]
+            self.assertEqual(len(chosen), 10)
+            self.assertEqual(chosen[0], 100)
+            self.assertEqual(chosen[-1], 1100)
+            self.assertGreaterEqual(min(b - a for a, b in zip(chosen, chosen[1:])), 100)
+
+            candidate.mkdir()
+            for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
+                (candidate / name).write_bytes(b'new')
+            ranked.write(candidate / 'RUNNING_STATS.json', {'skill_ratings': {m: 1700 for m in MODES}})
+            self.assertTrue(ranked.add_policy_to_pool(candidate, pool, 10))
+            promoted = [int(p.name) for p in ranked.policy_versions(pool)]
+            self.assertEqual(len(promoted), 10)
+            self.assertNotIn(100, promoted)
+            self.assertIn(1200, promoted)
+
+    def test_promotion_requires_margin_over_strongest_policy_in_both_evals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = Path(tmp)
+            for step, elo in ((100, 1500), (200, 1600)):
+                version = pool / str(step)
+                version.mkdir()
+                ranked.write(version / 'STATS.json', {'skill_ratings': {m: elo for m in MODES}})
+            self.assertEqual(ranked.strongest_pool_ranking(pool), (1600.0, 200))
+            ok, strongest, version = ranked.beats_strongest(
+                {'Ranking': 1650}, {'Ranking': 1651}, pool, 50)
+            self.assertTrue(ok)
+            self.assertEqual((strongest, version), (1600.0, 200))
+            self.assertFalse(ranked.beats_strongest(
+                {'Ranking': 1649}, {'Ranking': 1700}, pool, 50)[0])
+
     def test_budget(self):
         self.assertEqual(minutes_plan(180, 6, 30), [6, 30, 30, 30, 30, 30, 24])
         self.assertEqual(minutes_plan(3, 6, 30), [3])
@@ -63,15 +106,15 @@ class RankingTests(unittest.TestCase):
             stats = root / '100' / 'STATS.json'
             stats.write_text(json.dumps({'skill_ratings': ref}))
             result = dict(opponents=[dict(timesteps=100, rounds=10, ratings=ref.copy())], rounds=10,
-                          ratings={m: {'average': v} for m, v in ref.items()},
+                          ratings={m: {'average': v + 40, 'end': v} for m, v in ref.items()},
                           mode_goals={m: {'for': n, 'against': 1} for m, n in zip(MODES, [50, 20, 5])})
-            result['ratings']['Ranking'] = {'average': 1300}
+            result['ratings']['Ranking'] = {'average': 1340, 'end': 1300}
             before = pool_digest(root)
             self.assertEqual(checked_ranking(result, root)['Ranking'], 1300)
-            result['ratings']['Ranking']['average'] = 1250  # average over the first two modes only
+            result['ratings']['Ranking']['end'] = 1250  # raw endpoint must match the mode endpoints
             with self.assertRaises(ValueError):
                 checked_ranking(result, root)
-            result['ratings']['Ranking']['average'] = 1300
+            result['ratings']['Ranking']['end'] = 1300
             result['opponents'][0]['ratings']['2v2'] += 10
             with self.assertRaises(ValueError):
                 checked_ranking(result, root)
@@ -121,7 +164,7 @@ class RankingTests(unittest.TestCase):
                 ranked.write(cmd[cmd.index('--rate-out') + 1], dict(
                     anchored=True, seed=seed, rounds=rounds, checkpoint_timesteps=n,
                     settings=dict(deterministic=False, policy_temperature=1.0),
-                    ratings={m: {'average': elo} for m in (*MODES, 'Ranking')},
+                    ratings={m: {'average': elo + 10, 'end': elo} for m in (*MODES, 'Ranking')},
                     opponents=[dict(timesteps=1, rounds=rounds, ratings=ref)],
                     mode_goals={m: {'for': 3, 'against': 1} for m in MODES}))
 
@@ -151,6 +194,83 @@ class RankingTests(unittest.TestCase):
                 self.assertEqual(set(state['audit']), {'100', '120', '140'})
                 self.assertEqual(ranked.pool_digest(opponent.parent), state['pool_sha256'])
                 self.assertEqual(ranked.read(base / 'RUNNING_STATS.json')['total_timesteps'], 100)
+
+    def test_evolving_campaign_trains_and_rates_against_same_ten_then_fifo_promotes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base, out = root / 'checkpoints/100', root / 'campaign'
+            base.mkdir(parents=True)
+            out.mkdir()
+            bot = root / 'GigaLearnBot'
+            bot.touch()
+            (root / 'train_1v1_2v2_3v3.sh').touch()
+            ranked.write(base / 'INFO.json', {'model': 's'})
+            ranked.write(base / 'RUNNING_STATS.json', dict(total_timesteps=100, mirror_x=-1,
+                                                            skill_ratings={m: 1500 for m in MODES}))
+            for name in (*ranked.MODELS, *(k + '_OPTIM' for k in ranked.MODELS), 'SHARED_HEAD_SLOTS'):
+                (base / (name + '.lt')).write_bytes(b'weights')
+            versions = base.parent / 'policy_versions'
+            for step in range(1, 11):
+                version = versions / str(step)
+                version.mkdir(parents=True)
+                for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
+                    (version / name).write_bytes(f'{step}-{name}'.encode())
+                ranked.write(version / 'STATS.json', {'skill_ratings': {m: 1500 + step for m in MODES}})
+            args = argparse.Namespace(
+                base=base, out=out, bot=bot, minutes=1, pilot_minutes=1, block_minutes=1,
+                rounds=20, threads=1, minibatch=1008, seed=1, audit_seed=9007,
+                wandb_offline=False, wandb_online=False, wandb_bridge=False, github_backup=False,
+                reward_metrics=False, player_metrics=False, throughput_profile=None, continuous=False,
+                evolving_opponents=True, opponent_pool_size=10, promotion_margin=50.0,
+                reference_pool=None, extra_versions=None, target_ranking=None, stop_on_target=False,
+                rewards=None,
+            )
+            train_commands = []
+            def native(cmd, env, log, heartbeat=None):
+                checkpoints = Path(cmd[cmd.index('--checkpoints') + 1])
+                if cmd[0] == 'bash':
+                    train_commands.append(cmd)
+                    parent = ranked.newest(checkpoints)
+                    candidate = checkpoints / '120'
+                    shutil.copytree(parent, candidate)
+                    ranked.write(candidate / 'RUNNING_STATS.json', dict(
+                        total_timesteps=120, mirror_x=-1,
+                        skill_ratings={m: 1700 for m in MODES}))
+                    return
+                candidate_path = ranked.newest(Path(cmd[cmd.index('--checkpoints') + 1]))
+                step = int(candidate_path.name)
+                seed = int(cmd[cmd.index('--seed') + 1])
+                rounds = int(cmd[cmd.index('--rate-rounds') + 1])
+                pool = Path(cmd[cmd.index('--rate-versions') + 1])
+                refs = {int(p.name): ranked.read(p / 'STATS.json')['skill_ratings']
+                        for p in ranked.policy_versions(pool)}
+                elo = 1700.0 if step == 120 else 1500.0
+                ratings = {m: {'average': elo - 25, 'end': elo} for m in MODES}
+                ratings['Ranking'] = {'average': elo - 25, 'end': elo}
+                result = dict(
+                    anchored=True, seed=seed, rounds=rounds, checkpoint_timesteps=step,
+                    settings={'deterministic': False, 'policy_temperature': 1.0}, ratings=ratings,
+                    opponents=[dict(timesteps=t, rounds=rounds // len(refs), ratings=r)
+                               for t, r in refs.items()],
+                    mode_goals={m: {'for': 3, 'against': 1} for m in MODES})
+                ranked.write(cmd[cmd.index('--rate-out') + 1], result)
+
+            with patch.object(ranked, 'run', native), patch.object(ranked, 'REPO', root), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ranked.campaign(args)
+            state = ranked.read(out / 'state.json')
+            self.assertEqual(state['status'], 'complete')
+            self.assertEqual(state['history'][-1]['steps'], 120)
+            self.assertTrue(state['history'][-1]['opponent_pool_promoted'])
+            self.assertEqual(state['history'][-1]['strongest_opponent_ranking'], 1510)
+            self.assertEqual(len(ranked.policy_versions(out / 'pool')), 10)
+            self.assertNotIn(1, [int(p.name) for p in ranked.policy_versions(out / 'pool')])
+            self.assertIn(120, [int(p.name) for p in ranked.policy_versions(out / 'pool')])
+            self.assertEqual({p.name for p in ranked.policy_versions(out / 'pool')},
+                             {p.name for p in ranked.policy_versions(out / 'learner/policy_versions')})
+            train_cmd = train_commands[0]
+            self.assertEqual(train_cmd[train_cmd.index('--max-versions') + 1], '10')
+            self.assertEqual(train_cmd[train_cmd.index('--ts-per-version') + 1], '9223372036854775807')
 
 
 if __name__ == '__main__':

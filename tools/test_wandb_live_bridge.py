@@ -43,6 +43,12 @@ class WandbLiveBridgeTest(unittest.TestCase):
                     'screen': {'1v1': 1540.0, '2v2': 1710.0, '3v3': 1690.0, 'Ranking': 1646.7},
                     'confirm': {'1v1': 1560.0, '2v2': 1725.0, '3v3': 1705.0, 'Ranking': 1663.3},
                     'promoted': True,
+                    'opponent_pool_steps': list(range(10)),
+                    'opponent_pool_generation': 0,
+                    'strongest_opponent_ranking': 1600.0,
+                    'strongest_opponent_steps': 9,
+                    'opponent_pool_promoted': False,
+                    'opponent_pool_margin': 50.0,
                 },
             ],
             'best': {
@@ -101,8 +107,11 @@ class WandbLiveBridgeTest(unittest.TestCase):
             # Stage 0 at parent_steps + 6 training steps (stage 1 merges into step 6).
             self.assertEqual(len(events), 7)
             self.assertEqual([s for s, _ in events], sorted(s for s, _ in events))
-            # Native skill-tracker ratings have their own clean namespace; no metric is Live/-prefixed.
-            self.assertIn('Skill/1v1', events[-1][1])
+            # Native Elo is a discrete raw event; pool diagnostics share that evaluation step.
+            self.assertIn('Elo/1v1', events[-1][1])
+            self.assertEqual(events[-1][1]['Elo/1v1'], 1506.0)
+            self.assertEqual(events[-1][1]['Campaign/Opponent Pool Size'], 10)
+            self.assertEqual(events[-1][1]['Campaign/Strongest Opponent Elo'], 1600.0)
             self.assertFalse(any(key.startswith('Live/') for _, event in events for key in event))
             self.assertAlmostEqual(events[-1][1]['Rating/Ranking'], 1646.7)
             self.assertAlmostEqual(events[-1][1]['Confirmation/Ranking'], 1663.3)

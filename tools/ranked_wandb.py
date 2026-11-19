@@ -37,11 +37,18 @@ def log_stage(run, campaign, entry, best_steps):
                 if lo < row['Total Timesteps'] <= hi:
                     training_rows.append(row)
     for row in sorted(training_rows, key=lambda r: r['Total Timesteps']):
-        run.log({('Skill/' + k.removeprefix('Rating/') if k.startswith('Rating/') else k): v
+        run.log({('Elo/' + k.removeprefix('Rating/') if k.startswith('Rating/') else k): v
                  for k, v in row.items() if k != '_time' and v is not None})
     record = {f'Rating/{k}': v for k, v in entry['screen'].items()}
     record.update({f'Confirmation/{k}': v for k, v in (entry['confirm'] or {}).items()})
     record.update({'Total Timesteps': hi, 'Campaign/Best Steps': best_steps, 'Campaign/Stage': entry['stage']})
+    if entry.get('opponent_pool_steps') is not None:
+        record['Campaign/Opponent Pool Size'] = len(entry['opponent_pool_steps'])
+        record['Campaign/Opponent Pool Generation'] = entry.get('opponent_pool_generation', 0)
+        record['Campaign/Opponent Pool Promoted'] = int(bool(entry.get('opponent_pool_promoted')))
+        if entry.get('strongest_opponent_ranking') is not None:
+            record['Campaign/Strongest Opponent Elo'] = entry['strongest_opponent_ranking']
+            record['Campaign/Pool Promotion Margin'] = entry.get('opponent_pool_margin')
     if entry.get('steps_per_second') is not None:
         record['Campaign/Steps Per Second'] = entry['steps_per_second']
     run.log(record)
@@ -88,7 +95,7 @@ def stream(campaign, directory, interval=10):
                     step = int(row['Total Timesteps'])
                     if step > last:
                         events.setdefault(step, {}).update({
-                            ('Skill/' + k.removeprefix('Rating/') if k.startswith('Rating/') else k): v
+                            ('Elo/' + k.removeprefix('Rating/') if k.startswith('Rating/') else k): v
                             for k, v in row.items() if k != '_time' and v is not None})
             for entry in state['history']:
                 if entry['stage'] in stages:

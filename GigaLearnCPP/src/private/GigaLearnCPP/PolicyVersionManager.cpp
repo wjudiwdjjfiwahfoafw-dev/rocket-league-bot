@@ -432,26 +432,23 @@ void GGL::PolicyVersionManager::RunSkillSession(PPOLearner* ppo, Report& report)
 	skill.curGoals = 0;
 
 	if (roundsPlayed == numRounds) {
-		double modeAvgSum = 0;
+		double modeEndSum = 0;
 		for (auto& pair : ratingSeries) {
 			auto& series = pair.second;
-			size_t first = series.size() / 4;
-			double sum = 0;
-			for (size_t i = first; i < series.size(); i++)
-				sum += series[i];
-			float average = (float)(sum / (series.size() - first));
-			modeAvgSum += average;
+			const float endpoint = series.back();
+			modeEndSum += endpoint;
 
-			RG_LOG(" > Rating session result: " << pair.first << " = " << average << " (after the last round: " << series.back() << ")");
-			report["Rating/" + pair.first] = average;
-			report["Skill Matches/Rating After Last Round " + pair.first] = series.back();
-			skill.curRatings.data[pair.first] = average;
+			RG_LOG(" > Rating session endpoint: " << pair.first << " = " << endpoint);
+			// Publish the last Elo state as-is. Do not smooth/interpolate across rounds.
+			report["Rating/" + pair.first] = endpoint;
+			report["Skill Matches/Rating After Last Round " + pair.first] = endpoint;
+			skill.curRatings.data[pair.first] = endpoint;
 		}
 		if (!ratingSeries.empty()) {
-			float overallAvg = (float)(modeAvgSum / ratingSeries.size());
-			RG_LOG(" > Rating session result: Average = " << overallAvg);
-			// The one number to optimize: the mean over all trained modes (1v1, 2v2, and 3v3 once it is trained)
-			report["Rating/Ranking"] = overallAvg;
+			float ranking = (float)(modeEndSum / ratingSeries.size());
+			RG_LOG(" > Rating session endpoint Ranking (mean of mode endpoints) = " << ranking);
+			// Ranking is the cross-mode composite; each mode's reported Elo above remains unmodified.
+			report["Rating/Ranking"] = ranking;
 		}
 
 		report["Skill Matches/Rounds"] = roundsPlayed;

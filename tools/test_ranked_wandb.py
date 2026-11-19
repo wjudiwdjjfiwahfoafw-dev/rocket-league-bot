@@ -32,7 +32,7 @@ class StreamTests(unittest.TestCase):
             self.assertTrue(start.call_args.kwargs['online'])
             self.assertEqual([r['Total Timesteps'] for r in run.rows], [1, 2])
             self.assertEqual(run.rows[0]['Rating/Ranking'], 1400)
-            self.assertEqual(run.rows[1]['Skill/Ranking'], 1500)
+            self.assertEqual(run.rows[1]['Elo/Ranking'], 1500)
             self.assertFalse(any(key.startswith('Live/') for row in run.rows for key in row))
             self.assertFalse(any(key.startswith('Stream/') for key in run.summary))
             self.assertTrue((root / 'out/.relay_cursor.json').is_file())

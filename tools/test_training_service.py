@@ -9,6 +9,7 @@ from training_service import (
     assess_goal,
     backup,
     seconds_until_backup_due,
+    snapshot_layout,
 )
 
 
@@ -32,6 +33,22 @@ class GoalTests(unittest.TestCase):
 
 
 class BackupIntervalTests(unittest.TestCase):
+    def test_evolving_backup_contains_only_latest_model_and_exact_old_policy_pool(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = Path(tmp) / 'campaign'
+            latest = campaign / 'learner/9000'
+            latest.mkdir(parents=True)
+            versions = campaign / 'learner/policy_versions'
+            versions.mkdir()
+            for step in range(10):
+                (versions / str(step)).mkdir()
+            sources, targets, evolving = snapshot_layout(
+                campaign, {'runtime_overrides': {'evolving_opponents': True, 'opponent_pool_size': 10}}, latest)
+            self.assertTrue(evolving)
+            self.assertEqual(sources, [latest, versions])
+            self.assertEqual(targets, ['learner/9000', 'learner/policy_versions'])
+            self.assertEqual(len(list(versions.iterdir())), 10)
+
     def test_default_backup_interval_is_thirty_minutes(self):
         self.assertEqual(DEFAULT_BACKUP_INTERVAL, 1800)
         self.assertEqual(BACKUP_RETRY_SECONDS, 60)

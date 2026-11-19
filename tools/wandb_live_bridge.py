@@ -399,7 +399,7 @@ def build_wandb_events(snapshot: dict, last_step: int, logged_stages: set[int]) 
             if k == '_time' or v is None or isinstance(v, bool):
                 continue
             if isinstance(v, (int, float)):
-                out_key = ('Skill/' + k.removeprefix('Rating/')) if k.startswith('Rating/') else k
+                out_key = ('Elo/' + k.removeprefix('Rating/')) if k.startswith('Rating/') else k
                 rec[out_key] = v
         # Across a stage evaluation/restart boundary, fold fixed-pool eval, promotion copy,
         # and trainer relaunch wall time into Overall Steps/Second so zero runtime is excluded.
@@ -430,6 +430,13 @@ def build_wandb_events(snapshot: dict, last_step: int, logged_stages: set[int]) 
             rec[f'Confirmation/{m}'] = v
         rec['Campaign/Stage'] = stage
         rec['Campaign/Promoted'] = 1 if entry.get('promoted') else 0
+        if entry.get('opponent_pool_steps') is not None:
+            rec['Campaign/Opponent Pool Size'] = len(entry['opponent_pool_steps'])
+            rec['Campaign/Opponent Pool Generation'] = entry.get('opponent_pool_generation', 0)
+            rec['Campaign/Opponent Pool Promoted'] = int(bool(entry.get('opponent_pool_promoted')))
+            if entry.get('strongest_opponent_ranking') is not None:
+                rec['Campaign/Strongest Opponent Elo'] = entry['strongest_opponent_ranking']
+                rec['Campaign/Pool Promotion Margin'] = entry.get('opponent_pool_margin')
         rec['Campaign/Target Ranking'] = target
         if best_screen_so_far is not None:
             rec['Campaign/Best Screen Ranking'] = best_screen_so_far
