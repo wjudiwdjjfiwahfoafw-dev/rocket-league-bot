@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Run a bounded CPU training campaign. Rerun the same command to resume. Linux, stdlib only
-unless --wandb-offline is requested. See RANKED_TRAINING.md for the selection protocol.
+"""Run a staged CPU training campaign, optionally repeating blocks until stopped. Rerun to resume.
+Linux, stdlib only unless --wandb-offline is requested. See RANKED_TRAINING.md for the protocol.
 """
 import argparse
 import fcntl
@@ -164,6 +164,14 @@ def minutes_plan(total, pilot, block):
     return minutes
 
 
+def budget_for_stage(plan, stage, continuous=False, block=15):
+    """Return a stage budget, or None once a finite campaign's plan is exhausted."""
+    budgets = [0, *plan]  # stage 0 rates the parent; training stages follow it
+    if stage < len(budgets):
+        return budgets[stage]
+    return block if continuous else None
+
+
 def promote(screen, confirm, best):
     if best is None:
         return True
@@ -273,6 +281,9 @@ def campaign(args):
     if getattr(args, 'throughput_profile', None):
         state.setdefault('runtime_overrides', {})['throughput_profile'] = args.throughput_profile
         runtime_changed = True
+    if getattr(args, 'continuous', False):
+        state.setdefault('runtime_overrides', {})['continuous'] = True
+        runtime_changed = True
     if runtime_changed:
         write(statefile, state)
     runtime_overrides = state.get('runtime_overrides') or {}
@@ -318,9 +329,14 @@ def campaign(args):
     try:
         # Stage 0 is the parent, not a trained candidate. Later stages always continue the latest
         # weights, irrespective of short-term rating noise. Only the independent best copy is selected.
-        for i, minutes in enumerate([0, *plan]):
-            if i < len(state['history']):
-                continue
+        stage = len(state['history'])
+        while True:
+            minutes = budget_for_stage(
+                plan, stage, continuous=runtime_overrides.get('continuous', False),
+                block=getattr(args, 'block_minutes', 15))
+            if minutes is None:
+                break
+            i = stage
             stage_wall_start = time.monotonic()
             if state['pending'] is None:
                 state['pending'] = dict(stage=i, start_steps=int(newest(learner).name), seconds=0, wall_seconds=0, trained=False)
@@ -340,7 +356,8 @@ def campaign(args):
                        '--max-minutes', max(0.02, minutes - previous / 60)]
                 if int(newest(learner).name) == int(base.name):
                     cmd.append('--new-run')
-                print(f'Stage {i}/{len(plan)}: training from {newest(learner).name} ({minutes} min budget)', flush=True)
+                stage_label = f'{i}/{len(plan)}' if i <= len(plan) else f'{i}/∞'
+                print(f'Stage {stage_label}: training from {newest(learner).name} ({minutes} min budget)', flush=True)
                 try:
                     run(cmd, env, logdir / f'train-{i}.log', heartbeat)
                 finally:
@@ -383,7 +400,9 @@ def campaign(args):
             if wb is not None:
                 ranked_wandb.log_stage(wb, out, entry, state['best']['steps'])
             print(f'Stage {i} complete. Best: {state["best"]["steps"]}; latest: {steps}', flush=True)
-            if (getattr(args, 'stop_on_target', False) and getattr(args, 'target_ranking', None) is not None and i > 0):
+            if (not runtime_overrides.get('continuous', False) and
+                    getattr(args, 'stop_on_target', False) and
+                    getattr(args, 'target_ranking', None) is not None and i > 0):
                 margin = float(getattr(args, 'target_margin', 0.0) or 0.0)
                 goal = args.target_ranking + margin
                 cur_best = state['best']
@@ -391,6 +410,7 @@ def campaign(args):
                         (cur_best.get('confirm') or {}).get('Ranking', 0.0) >= goal):
                     print(f'Target threshold {goal:.2f} reached on screen & confirm at stage {i}; proceeding to held-out audit.', flush=True)
                     break
+            stage += 1
         # An untouched seed measures the selected checkpoint against the original baseline on the same scale.
         state['status'] = 'auditing'
         write(statefile, state)
@@ -480,6 +500,8 @@ def main():
                         help='Enable sampled per-player telemetry for this campaign and persist the choice across resumes')
     parser.add_argument('--throughput-profile', choices=('cpu-20k',),
                         help='Use the benchmarked two-vCPU profile targeting about 20k overall steps/second')
+    parser.add_argument('--continuous', action='store_true',
+                        help='Repeat evaluation-backed training blocks indefinitely, until interrupted')
     args = parser.parse_args()
     if args.backup_interval < 60:
         parser.error('--backup-interval must be at least 60 seconds')

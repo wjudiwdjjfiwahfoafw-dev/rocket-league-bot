@@ -40,7 +40,8 @@ def restore(snapshot=SNAPSHOT, work=WORK):
 
 
 def build_resume_command(state, work, without_services=False, backup_interval=1800,
-                         reward_metrics=False, player_metrics=False, throughput_profile=None):
+                         reward_metrics=False, player_metrics=False, throughput_profile=None,
+                         continuous=False):
     config = state['config']
     cmd = [sys.executable, str(ROOT / 'tools/train_ranked.py'), '--base', config['base'],
            '--out', str(work.relative_to(ROOT)), '--minutes', str(sum(config['minutes'])),
@@ -77,6 +78,8 @@ def build_resume_command(state, work, without_services=False, backup_interval=18
     profile = throughput_profile or (state.get('runtime_overrides') or {}).get('throughput_profile')
     if profile:
         cmd += ['--throughput-profile', profile]
+    if continuous or (state.get('runtime_overrides') or {}).get('continuous'):
+        cmd.append('--continuous')
     if not without_services:
         cmd += ['--github-backup', '--backup-interval', str(backup_interval), '--wandb-bridge']
     return cmd
@@ -93,6 +96,8 @@ def main():
                         help='Enable and persist sampled per-player telemetry on the resumed campaign')
     parser.add_argument('--throughput-profile', choices=('cpu-20k',),
                         help='Use the benchmarked two-vCPU profile targeting about 20k overall steps/second')
+    parser.add_argument('--continuous', action='store_true',
+                        help='Continue with repeated training/evaluation blocks indefinitely, until interrupted')
     parser.add_argument('--backup-interval', type=int, default=1800,
                         help='Minimum seconds between GitHub auto-backups (default: 1800 = 30 minutes)')
     args = parser.parse_args()
@@ -108,7 +113,8 @@ def main():
         return
     cmd = build_resume_command(state, work, without_services=args.without_services,
                                backup_interval=args.backup_interval, reward_metrics=args.reward_metrics,
-                               player_metrics=args.player_metrics, throughput_profile=args.throughput_profile)
+                               player_metrics=args.player_metrics, throughput_profile=args.throughput_profile,
+                               continuous=args.continuous)
     print('Resuming only because this script was explicitly invoked.', flush=True)
     subprocess.run(cmd, cwd=ROOT, check=True)
 

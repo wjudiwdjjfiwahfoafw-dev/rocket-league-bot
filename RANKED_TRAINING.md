@@ -8,14 +8,17 @@
 # Restore into results/ without launching training:
 python3 tools/resume_training.py --restore-only
 
-# Verify and resume training (starts 30m GitHub auto-backup + live W&B publisher):
+# Verify and resume the finite training schedule (starts 30m GitHub auto-backup + live W&B publisher):
 python3 tools/resume_training.py
+
+# Resume indefinitely in evaluation-backed 15-minute blocks, stopping only on SIGINT/SIGTERM:
+python3 tools/resume_training.py --continuous
 
 # Resume trainer only (no backup worker or W&B bridge):
 python3 tools/resume_training.py --without-services
 ```
 
-Send `SIGINT` (`Ctrl+C`) or `SIGTERM` once to pause cleanly: the native learner completes the current iteration, writes a full checkpoint, updates `state.json` to `paused`, and exits.
+Send `SIGINT` (`Ctrl+C`) or `SIGTERM` once to pause cleanly: the native learner completes the current iteration, writes a full checkpoint, updates `state.json` to `paused`, and exits. In `--continuous` mode, that is the only normal way the training loop ends; each 15-minute block is evaluated and the next block begins from the latest checkpoint. The held-out audit runs only for the finite schedule after all blocks finish.
 
 To start a fresh campaign (for example, a 12-hour run = `720` minutes) from the paused checkpoint against the same frozen reference pool:
 
