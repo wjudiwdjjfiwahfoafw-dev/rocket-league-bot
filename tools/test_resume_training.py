@@ -66,3 +66,36 @@ class RestoreTests(unittest.TestCase):
             (root / 'snapshot/manifest.json').write_text(json.dumps({'sha256': {'../outside': 'bad'}}))
             with self.assertRaises(ValueError):
                 verify(root / 'snapshot')
+
+    def test_build_resume_command_preserves_new_recipe_and_30m_backup(self):
+        state = {
+            'target_ranking': 1700.0,
+            'config': {
+                'base': 'checkpoints/3244539846',
+                'minutes': [12, 20, 20],
+                'rounds': 40,
+                'seed': 20261118,
+                'audit_seed': 9007,
+                'reference_pool': 'training-backup/pool',
+                'extra_versions': ['checkpoints/3137998278'],
+                'train_args': [
+                    '--threads', '2', '--games', '88', '--minibatch-size', '1008',
+                    '--lr', '0.00011', '--critic-lr', '0.0002', '--epochs', '2',
+                    '--entropy-scale', '0.0025', '--norm-advantages', 'mode',
+                    '--target-kl', '0.02', '--tactical-state-prob', '0.22',
+                    '--train-vs-old', '0.3', '--ts-per-save', '10m',
+                    '--mask-entropy', '--fuzzed-kickoffs', '--pfsp',
+                    '--rewards', 'Goal=600,Save=65',
+                ],
+            },
+        }
+        cmd = resume_training.build_resume_command(
+            state, resume_training.ROOT / 'results/weights1700-v3/campaign'
+        )
+        self.assertNotIn('--monitor', cmd)
+        for token in ('--github-backup', '--backup-interval', '1800', '--wandb-bridge',
+                      '--mask-entropy', '--fuzzed-kickoffs',
+                      '--pfsp', '--norm-advantages', 'mode', '--epochs', '2',
+                      '--critic-lr', '0.0002', '--tactical-state-prob', '0.22',
+                      '--extra-versions', 'checkpoints/3137998278'):
+            self.assertIn(token, cmd)

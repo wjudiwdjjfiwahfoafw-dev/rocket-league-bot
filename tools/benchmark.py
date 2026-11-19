@@ -18,7 +18,7 @@ Examples:
 
 Options:
     --bot PATH          the executable                                        (default: build/GigaLearnBot)
-    --checkpoints DIR   start from the newest checkpoint in this folder       (default: checkpoints)
+    --checkpoints DIR   start from the newest checkpoint in this folder       (default: training-backup/best)
     --fresh             start from an untrained network instead
     --iterations N      measured iterations, after one warm-up iteration      (default: 10)
     --repeat N          run the whole measurement N times                     (default: 1)
@@ -124,8 +124,9 @@ def run_once(opt, bot_args, env):
         result = {
             "iterations": len(measured),
             "steps_per_iteration": steps / len(measured),
-            "overall_sps": steps / (collection + consumption),
-            "learned_sps": learned / (collection + consumption),
+            "overall_sps": steps / wall_between,
+            "compute_sps": steps / (collection + consumption),
+            "learned_sps": learned / wall_between,
             "wall_sps": steps / wall_between,
             "collection_sps": steps / collection,
             "consumption_sps": steps / consumption,
@@ -145,7 +146,7 @@ def main():
         split = argv.index("--")
         argv, bot_args = argv[:split], argv[split + 1:]
 
-    opt = {"bot": "build/GigaLearnBot", "checkpoints": "checkpoints", "fresh": False, "iterations": 10, "repeat": 1,
+    opt = {"bot": "build/GigaLearnBot", "checkpoints": "training-backup/best", "fresh": False, "iterations": 10, "repeat": 1,
            "preset": True, "label": "", "json": ""}
     env = {}
     i = 0

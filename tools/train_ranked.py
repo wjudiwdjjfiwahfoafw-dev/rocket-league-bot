@@ -174,7 +174,10 @@ def promote(screen, confirm, best):
 
 def campaign(args):
     out, learner = args.out, args.out / 'learner'
-    base = checkpoint(args.base)
+    statefile = out / 'state.json'
+    base = checkpoint(args.base) if not statefile.exists() else Path(args.base)
+    if not base.name.isdecimal():
+        raise ValueError(f'Not a numbered checkpoint path: {base}')
     if not args.bot.is_file():
         raise ValueError(f'Build {args.bot} before starting the campaign')
     plan = minutes_plan(args.minutes, args.pilot_minutes, args.block_minutes)
@@ -183,8 +186,18 @@ def campaign(args):
                   '--fixed-rollout', '--lean-metrics', '--minibatch-size', str(args.minibatch),
                   '--lr', '1e-4', '--skill-minutes', '15', '--ts-per-save', '5m', '--keep-checkpoints', '2']
     # Explicit recipe overrides make follow-up trials reproducible without editing presets.
-    overrides = [('lr', '--lr'), ('entropy_scale', '--entropy-scale'),
-                 ('random_state_prob', '--random-state-prob'), ('train_vs_old', '--train-vs-old')]
+    overrides = [
+        ('lr', '--lr'), ('critic_lr', '--critic-lr'),
+        ('epochs', '--epochs'), ('batch_size', '--batch-size'),
+        ('entropy_scale', '--entropy-scale'), ('norm_advantages', '--norm-advantages'),
+        ('target_kl', '--target-kl'), ('gamma', '--gamma'), ('gae_lambda', '--gae-lambda'),
+        ('return_stat_max_count', '--return-stat-max-count'),
+        ('random_state_prob', '--random-state-prob'),
+        ('tactical_state_prob', '--tactical-state-prob'),
+        ('train_vs_old', '--train-vs-old'),
+        ('ts_per_version', '--ts-per-version'), ('max_versions', '--max-versions'),
+        ('skill_minutes', '--skill-minutes'), ('ts_per_save', '--ts-per-save'),
+    ]
     for attribute, flag in overrides:
         value = getattr(args, attribute, None)
         if value is not None:
@@ -192,6 +205,14 @@ def campaign(args):
                 train_args[train_args.index(flag) + 1] = str(value)
             else:
                 train_args.extend([flag, str(value)])
+    bool_overrides = [
+        ('mask_entropy', '--mask-entropy'),
+        ('fuzzed_kickoffs', '--fuzzed-kickoffs'),
+        ('pfsp', '--pfsp'),
+    ]
+    for attribute, flag in bool_overrides:
+        if getattr(args, attribute, False) and flag not in train_args:
+            train_args.append(flag)
     if getattr(args, 'rewards', None):
         train_args.extend(['--rewards', args.rewards])
     config = dict(base=str(base), preset_sha256=hashlib.sha256((REPO / 'train_1v1_2v2_3v3.sh').read_bytes()).hexdigest(),
@@ -200,7 +221,9 @@ def campaign(args):
                   minutes=plan, modes=list(MODES), protocol='anchored-v1')
     if getattr(args, 'reference_pool', None) is not None:
         config['reference_pool'] = str(args.reference_pool)
-    statefile = out / 'state.json'
+    extra_versions = [str(p) for p in (getattr(args, 'extra_versions', None) or [])]
+    if extra_versions:
+        config['extra_versions'] = extra_versions
     if not statefile.exists():
         if any(p.name != '.lock' for p in out.iterdir()):
             raise ValueError(f'Refusing to overwrite a non-empty campaign directory: {out}')
@@ -210,6 +233,25 @@ def campaign(args):
             raise ValueError('--rounds must be a multiple of twice the size of the (nonempty) pool')
         shutil.copytree(src_pool, out / 'pool')
         shutil.copytree(src_pool, learner / 'policy_versions')
+        # Optional stronger native sparring partners for learner/policy_versions ONLY; out/pool stays immutable.
+        for extra in (getattr(args, 'extra_versions', None) or []):
+            extra = Path(extra)
+            if not extra.name.isdecimal() or not (extra / 'POLICY.lt').is_file():
+                raise ValueError(f'Invalid --extra-versions entry: {extra}')
+            if int(extra.name) > int(base.name):
+                raise ValueError(f'--extra-versions entry {extra.name} is newer than --base {base.name}')
+            vdest = learner / 'policy_versions' / extra.name
+            if not vdest.exists():
+                vdest.mkdir(parents=True)
+                for fname in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt', 'STATS.json'):
+                    if (extra / fname).is_file():
+                        shutil.copy2(extra / fname, vdest / fname)
+                if not (vdest / 'STATS.json').is_file() and (extra / 'RUNNING_STATS.json').is_file():
+                    rstats = read(extra / 'RUNNING_STATS.json')
+                    write(vdest / 'STATS.json', {
+                        'skill_ratings': rstats.get('skill_ratings', {}),
+                        'mirror_x': rstats.get('mirror_x', -1),
+                    })
         shutil.copytree(base, learner / base.name)
         (out / 'eval').mkdir()
         (out / 'best').mkdir()
@@ -237,12 +279,13 @@ def campaign(args):
         wb = ranked_wandb.start(out, config, f'ranking-{base.name}')
         state['wandb_dir'] = str(Path(wb.dir).parent.relative_to(REPO)) if Path(wb.dir).is_relative_to(REPO) else str(Path(wb.dir).parent)
     service = None
-    if getattr(args, 'monitor', False) or getattr(args, 'github_backup', False):
-        service_cmd = [sys.executable, str(REPO / 'tools/training_service.py'), str(out),
-                       '--port', str(args.monitor_port)]
-        if args.github_backup:
-            service_cmd.append('--backup')
-        service = subprocess.Popen(service_cmd)
+    if getattr(args, 'github_backup', False):
+        service = subprocess.Popen([sys.executable, str(REPO / 'tools/training_service.py'), str(out),
+                                    '--interval', str(getattr(args, 'backup_interval', 1800))])
+    bridge_proc = None
+    if getattr(args, 'wandb_bridge', False):
+        bridge_proc = subprocess.Popen([sys.executable, str(REPO / 'tools/wandb_live_bridge.py'),
+                                        'publish', str(out), '--interval', '20'])
     streamer = None
     if getattr(args, 'wandb_online', False):
         streamer = subprocess.Popen([sys.executable, str(REPO / 'tools/ranked_wandb.py'),
@@ -254,15 +297,19 @@ def campaign(args):
         for i, minutes in enumerate([0, *plan]):
             if i < len(state['history']):
                 continue
+            stage_wall_start = time.monotonic()
             if state['pending'] is None:
-                state['pending'] = dict(stage=i, start_steps=int(newest(learner).name), seconds=0, trained=False)
+                state['pending'] = dict(stage=i, start_steps=int(newest(learner).name), seconds=0, wall_seconds=0, trained=False)
             pending = state['pending']
+            prior_wall = float(pending.get('wall_seconds', pending.get('seconds', 0)) or 0.0)
             if minutes and not pending['trained']:
                 state['status'] = 'training'
                 write(statefile, state)
                 start, previous = time.monotonic(), pending['seconds']
                 def heartbeat():
-                    pending['seconds'] = previous + time.monotonic() - start
+                    now = time.monotonic()
+                    pending['seconds'] = previous + now - start
+                    pending['wall_seconds'] = prior_wall + now - stage_wall_start
                     write(statefile, state)
                 cmd = ['bash', 'train_1v1_2v2_3v3.sh', '--checkpoints', learner, *train_args,
                        '--seed', args.seed + i, '--run-name', 'three-mode-ranking',
@@ -295,8 +342,13 @@ def campaign(args):
                     tmp.rename(dest)
                 state['best'] = dict(steps=steps, screen=screen, confirm=confirm)
             seconds = pending['seconds']
-            entry = dict(stage=i, start_steps=pending['start_steps'], steps=steps, train_seconds=seconds,
-                         steps_per_second=(steps - pending['start_steps']) / seconds if seconds else None,
+            wall_seconds = prior_wall + (time.monotonic() - stage_wall_start)
+            delta_steps = steps - pending['start_steps']
+            # Include 100% of stage wall-clock time (subprocess startup, rollout, PPO, saves,
+            # screen/confirmation evaluations, and checkpoint promotion copy).
+            entry = dict(stage=i, start_steps=pending['start_steps'], steps=steps,
+                         train_seconds=seconds, wall_seconds=wall_seconds,
+                         steps_per_second=(delta_steps / wall_seconds) if (minutes and wall_seconds > 0) else None,
                          screen=screen, confirm=confirm, promoted=won)
             state['history'].append(entry)
             state['pending'] = None
@@ -307,11 +359,24 @@ def campaign(args):
             if wb is not None:
                 ranked_wandb.log_stage(wb, out, entry, state['best']['steps'])
             print(f'Stage {i} complete. Best: {state["best"]["steps"]}; latest: {steps}', flush=True)
+            if (getattr(args, 'stop_on_target', False) and getattr(args, 'target_ranking', None) is not None and i > 0):
+                margin = float(getattr(args, 'target_margin', 0.0) or 0.0)
+                goal = args.target_ranking + margin
+                cur_best = state['best']
+                if (cur_best['screen']['Ranking'] >= goal and
+                        (cur_best.get('confirm') or {}).get('Ranking', 0.0) >= goal):
+                    print(f'Target threshold {goal:.2f} reached on screen & confirm at stage {i}; proceeding to held-out audit.', flush=True)
+                    break
         # An untouched seed measures the selected checkpoint against the original baseline on the same scale.
         state['status'] = 'auditing'
         write(statefile, state)
-        state['audit'] = {p.name: evaluate(p, config['audit_seed'], 2 * args.rounds) for p in
-                          (base, out / 'best' / str(state['best']['steps']), newest(learner))}
+        audit_targets = []
+        if base.is_dir() and (base / 'POLICY.lt').is_file():
+            audit_targets.append(base)
+        for cand in (out / 'best' / str(state['best']['steps']), newest(learner)):
+            if all(p.name != cand.name for p in audit_targets):
+                audit_targets.append(cand)
+        state['audit'] = {p.name: evaluate(p, config['audit_seed'], 2 * args.rounds) for p in audit_targets}
         if wb is not None:
             ranked_wandb.log_audit(wb, state)
         state['status'] = 'complete'
@@ -326,6 +391,12 @@ def campaign(args):
         if service is not None:
             service.terminate()
             service.wait(timeout=30)
+        if bridge_proc is not None:
+            try:
+                bridge_proc.wait(timeout=25)
+            except subprocess.TimeoutExpired:
+                bridge_proc.terminate()
+                bridge_proc.wait(timeout=15)
         if streamer is not None:
             try:
                 streamer.wait(timeout=15)
@@ -349,27 +420,54 @@ def main():
         parser.add_argument('--' + name, type=int, default=default)
     parser.add_argument('--wandb-offline', action='store_true', help='Write a syncable W&B run in --out; no credential or network needed')
     parser.add_argument('--wandb-online', action='store_true', help='Tail metrics to W&B online in a separate sandbox process; requires W&B credentials/network')
-    parser.add_argument('--monitor', action='store_true', help='Serve all recorded metrics in a browser')
-    parser.add_argument('--monitor-port', type=int, default=8080)
-    parser.add_argument('--github-backup', action='store_true', help='Automatically commit resumable snapshots and push the current branch (also starts monitor)')
+    parser.add_argument('--wandb-bridge', action='store_true', help='Stream live metrics to W&B via the GitHub Actions cloud relay even when direct W&B egress is blocked')
+    parser.add_argument('--github-backup', action='store_true', help='Automatically commit resumable snapshots and push the current branch every --backup-interval seconds')
+    parser.add_argument('--backup-interval', type=int, default=1800, help='Minimum seconds between GitHub auto-backups (default: 1800 = 30 minutes)')
     parser.add_argument('--reference-pool', type=Path, help='Explicit immutable opponent pool for a fresh experiment')
+    parser.add_argument('--extra-versions', type=Path, nargs='*', help='Optional native checkpoints copied into learner/policy_versions only (frozen eval pool untouched)')
     parser.add_argument('--audit-seed', type=int, default=AUDIT, help='Predeclared held-out audit seed')
     parser.add_argument('--target-ranking', type=float, help='Report a weight-only temperature-1 Ranking target; does not change immutable training settings')
+    parser.add_argument('--stop-on-target', action='store_true', help='Proceed straight to held-out audit once best clears target_ranking + target_margin on screen and confirm')
+    parser.add_argument('--target-margin', type=float, default=0.0, help='Optional Elo safety margin above --target-ranking before early audit')
     parser.add_argument('--lr', type=float, help='Explicit learning-rate override for a fresh experiment')
+    parser.add_argument('--critic-lr', type=float, help='Separate critic learning rate override')
+    parser.add_argument('--epochs', type=int, help='PPO epochs per iteration')
+    parser.add_argument('--batch-size', type=int, help='PPO batch size override')
     parser.add_argument('--entropy-scale', type=float)
+    parser.add_argument('--mask-entropy', action='store_true', help='Normalize entropy over valid actions')
+    parser.add_argument('--norm-advantages', choices=('off', 'all', 'mode'), help='Normalize PPO policy advantages')
+    parser.add_argument('--target-kl', type=float, help='KL early-stop target for multi-epoch PPO')
+    parser.add_argument('--gamma', type=float, help='Discount factor override')
+    parser.add_argument('--gae-lambda', type=float, help='GAE lambda override')
+    parser.add_argument('--return-stat-max-count', type=int, help='Effective sample cap on return standardizer')
     parser.add_argument('--random-state-prob', type=float)
+    parser.add_argument('--tactical-state-prob', type=float)
+    parser.add_argument('--fuzzed-kickoffs', action='store_true')
     parser.add_argument('--train-vs-old', type=float)
+    parser.add_argument('--pfsp', action='store_true', help='Prioritized Fictitious Self-Play opponent weighting')
+    parser.add_argument('--ts-per-version', help='Timesteps between saved policy versions (e.g. 12m)')
+    parser.add_argument('--max-versions', type=int, help='Maximum saved policy versions in learner pool')
+    parser.add_argument('--skill-minutes', type=float, help='Minutes between internal skill tracker matches')
+    parser.add_argument('--ts-per-save', help='Timesteps between local checkpoint saves (e.g. 10m)')
     parser.add_argument('--rewards', help='Native comma-separated reward weights for a fresh experiment')
     args = parser.parse_args()
+    if args.backup_interval < 60:
+        parser.error('--backup-interval must be at least 60 seconds')
     if args.target_ranking is not None and not (0 < args.target_ranking < 10000):
         parser.error('--target-ranking must be finite and between 0 and 10000')
     if args.lr is not None and not (0 < args.lr <= 0.01):
         parser.error('--lr must be in (0, 0.01]')
+    if args.critic_lr is not None and not (0 < args.critic_lr <= 0.01):
+        parser.error('--critic-lr must be in (0, 0.01]')
+    if args.epochs is not None and args.epochs <= 0:
+        parser.error('--epochs must be positive')
     if args.entropy_scale is not None and not (0 <= args.entropy_scale <= 1):
         parser.error('--entropy-scale must be in [0, 1]')
-    for value in (args.random_state_prob, args.train_vs_old):
+    for value in (args.random_state_prob, args.tactical_state_prob, args.train_vs_old):
         if value is not None and not (0 <= value <= 1):
             parser.error('Start/opponent probabilities must be in [0, 1]')
+    if (args.random_state_prob or 0.0) + (args.tactical_state_prob or 0.0) > 1.0:
+        parser.error('--random-state-prob + --tactical-state-prob must be <= 1')
     if args.bot.name != 'GigaLearnBot' or min(args.minutes, args.pilot_minutes, args.block_minutes, args.rounds, args.threads, args.minibatch) <= 0:
         parser.error('Budgets, rounds, threads and minibatch must be positive; --bot must name GigaLearnBot')
     if args.out.resolve().is_relative_to(args.base.parent.resolve()):

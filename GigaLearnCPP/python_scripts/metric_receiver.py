@@ -32,12 +32,46 @@ import sys
 import time
 
 TIMESTEPS_KEY = "Total Timesteps"
+COLLECTED_KEY = "Collected Timesteps"
+OVERALL_SPS_KEY = "Overall Steps/Second"
+ITERATION_TIME_KEY = "Iteration Time"
+OVERHEAD_TIME_KEY = "Overhead Time"
+
+# Process-start anchor so the very first emitted metric window also includes
+# executable/Python/W&B startup, checkpoint loading, and arena initialization.
+_PROCESS_START_MONO = time.monotonic()
 
 wandb_run = None
 jsonl_file = None
 jsonl_path = None
 jsonl_every = 1 # GGL_METRICS_EVERY
 jsonl_count = 0
+_jsonl_window = {"last_mono": _PROCESS_START_MONO, "steps": 0.0, "active": 0.0}
+_wandb_window = {"last_mono": _PROCESS_START_MONO, "steps": 0.0, "active": 0.0}
+
+
+def _accumulate_window(window, metrics):
+	try:
+		window["steps"] += float(metrics.get(COLLECTED_KEY, 0.0) or 0.0)
+		window["active"] += float(metrics.get("Collection Time", 0.0) or 0.0) + float(metrics.get("Consumption Time", 0.0) or 0.0)
+	except Exception:
+		pass
+
+
+def _flush_window_sps(window, payload):
+	"""Compute all-inclusive Overall Steps/Second over the contiguous wall-clock
+	window since the previous emitted report (zero CPU/wall time excluded)."""
+	now_mono = time.monotonic()
+	elapsed = max(now_mono - window["last_mono"], 1e-9)
+	steps = window["steps"]
+	active = window["active"]
+	window["last_mono"] = now_mono
+	window["steps"] = 0.0
+	window["active"] = 0.0
+	if steps > 0.0:
+		payload[OVERALL_SPS_KEY] = steps / elapsed
+		payload[ITERATION_TIME_KEY] = elapsed
+		payload[OVERHEAD_TIME_KEY] = max(0.0, elapsed - active)
 
 
 def _env_flag(name):
@@ -110,7 +144,14 @@ def _get_run_config():
 # Takes in the python executable path, the three wandb init strings, and optionally the current run ID
 # Returns the ID of the run (either newly created or resumed)
 def init(py_exec_path, project, group, name, id = None):
-	global jsonl_file, jsonl_path, jsonl_every
+	global jsonl_file, jsonl_path, jsonl_every, jsonl_count
+
+	if jsonl_count > 0:
+		now_mono = time.monotonic()
+		_jsonl_window.update(last_mono = now_mono, steps = 0.0, active = 0.0)
+		_wandb_window.update(last_mono = now_mono, steps = 0.0, active = 0.0)
+		jsonl_count = 0
+		add_metrics._wandb_count = 0
 
 	run_id = id if (id is not None and len(id) > 0) else None
 
@@ -155,9 +196,11 @@ def add_metrics(metrics):
 
 	if jsonl_file is not None:
 		global jsonl_count
+		_accumulate_window(_jsonl_window, metrics)
 		jsonl_count += 1
 		if (jsonl_count - 1) % jsonl_every == 0 or any(str(k).startswith("Rating/") for k in metrics):
 			row = {str(k): _to_json_value(v) for k, v in metrics.items()}
+			_flush_window_sps(_jsonl_window, row)
 			row["_time"] = time.time()
 			jsonl_file.write(json.dumps(row, sort_keys = True) + "\n")
 			jsonl_file.flush()
@@ -165,13 +208,16 @@ def add_metrics(metrics):
 	if wandb_run is not None:
 		# Sending every iteration costs CPU on a 2-core machine, which slows the simulation.
 		# GGL_WANDB_EVERY=N sends every Nth iteration; ratings and their iterations are always sent.
+		_accumulate_window(_wandb_window, metrics)
 		add_metrics._wandb_count = getattr(add_metrics, "_wandb_count", 0) + 1
 		try:
 			wandb_every = max(1, int(os.environ.get("GGL_WANDB_EVERY", "10")))
 		except ValueError:
 			wandb_every = 10
 		if (add_metrics._wandb_count - 1) % wandb_every == 0 or any(str(k).startswith("Rating/") for k in metrics):
-			wandb_run.log(metrics)
+			payload = dict(metrics)
+			_flush_window_sps(_wandb_window, payload)
+			wandb_run.log(payload)
 
 
 # Called by the learner when the run is over

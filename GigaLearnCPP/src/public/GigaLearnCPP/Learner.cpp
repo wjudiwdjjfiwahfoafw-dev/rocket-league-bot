@@ -660,6 +660,7 @@ void GGL::Learner::Start() {
 			std::vector<uint8_t> actionMasks;
 			std::vector<int8_t> terminals;
 			std::vector<int32_t> actions;
+			std::vector<uint8_t> modes;
 
 			void Clear() {
 				*this = Trajectory();
@@ -674,12 +675,24 @@ void GGL::Learner::Start() {
 				actionMasks += other.actionMasks;
 				terminals += other.terminals;
 				actions += other.actions;
+				modes += other.modes;
 			}
 
 			size_t Length() const {
 				return actions.size();
 			}
 		};
+
+		// Mode index (0=1v1, 1=2v2, 2=3v3) of each player slot in envSet, used for per-mode advantage normalization.
+		std::vector<uint8_t> playerModes(numPlayers, 0);
+		if (!render) {
+			int pIdx = 0;
+			for (auto& state : envSet->state.gameStates) {
+				uint8_t m = (uint8_t)RS_CLAMP((int)state.players.size() / 2 - 1, 0, 2);
+				for (size_t k = 0; k < state.players.size(); k++)
+					playerModes[pIdx++] = m;
+			}
+		}
 
 		// On fixed rollouts all samples are gathered before the next update. Reuse the actor's shared
 		// features for the critic here, instead of encoding every car a second time before GAE.
@@ -712,7 +725,52 @@ void GGL::Learner::Start() {
 				if (shouldTrainAgainstOld) {
 					// Set up training against old versions
 
-					int oldVersionIdx = RocketSim::Math::RandInt(0, versionMgr->versions.size());
+					int oldVersionIdx = 0;
+					int nVers = (int)versionMgr->versions.size();
+					if (config.pfspOpponents && nVers > 1) {
+						// Prioritized Fictitious Self-Play: favor higher-rated saved versions while keeping a
+						// healthy floor on all older versions so the policy never drops match-ups against earlier styles.
+						std::vector<double> meanElos(nVers, 0.0);
+						double bestElo = -1e9;
+						bool anyRated = false;
+						for (int v = 0; v < nVers; v++) {
+							auto& rmap = versionMgr->versions[v].ratings.data;
+							if (!rmap.empty()) {
+								double s = 0.0;
+								for (auto& kv : rmap)
+									s += kv.second;
+								meanElos[v] = s / rmap.size();
+								bestElo = std::max(bestElo, meanElos[v]);
+								anyRated = true;
+							}
+						}
+						if (anyRated) {
+							std::vector<double> weights(nVers, 1.0);
+							double totalW = 0.0;
+							for (int v = 0; v < nVers; v++) {
+								double recencyBonus = 0.25 * (double)v / (double)(nVers - 1);
+								double eloW = versionMgr->versions[v].ratings.data.empty()
+									? 1.0
+									: std::exp(std::clamp((meanElos[v] - bestElo) / 120.0, -4.0, 0.0));
+								weights[v] = std::max(0.30, eloW + recencyBonus);
+								totalW += weights[v];
+							}
+							double pick = RocketSim::Math::RandFloat() * totalW;
+							double acc = 0.0;
+							oldVersionIdx = nVers - 1;
+							for (int v = 0; v < nVers; v++) {
+								acc += weights[v];
+								if (pick <= acc) {
+									oldVersionIdx = v;
+									break;
+								}
+							}
+						} else {
+							oldVersionIdx = RocketSim::Math::RandInt(0, nVers);
+						}
+					} else {
+						oldVersionIdx = RocketSim::Math::RandInt(0, nVers);
+					}
 					oldVersion = &versionMgr->versions[oldVersionIdx];
 
 					oldVersionTeam = Team(RocketSim::Math::RandInt(0, 2)); 
@@ -814,8 +872,17 @@ void GGL::Learner::Start() {
 						}
 
 						torch::Tensor tActions, tLogProbs, tValues;
-						torch::Tensor tStates = DIMLIST2_TO_TENSOR<float>(envSet->state.obs);
-						torch::Tensor tActionMasks = DIMLIST2_TO_TENSOR<uint8_t>(envSet->state.actionMasks);
+						// Zero-copy views of envSet buffers (read-only during inference; copied into trajectories below).
+						torch::Tensor tStates = torch::from_blob(
+							envSet->state.obs.data.data(),
+							{ (int64_t)envSet->state.obs.size[0], (int64_t)envSet->state.obs.size[1] },
+							torch::kFloat32
+						);
+						torch::Tensor tActionMasks = torch::from_blob(
+							envSet->state.actionMasks.data.data(),
+							{ (int64_t)envSet->state.actionMasks.size[0], (int64_t)envSet->state.actionMasks.size[1] },
+							torch::kUInt8
+						);
 
 						if (!render) {
 							const float* obsData = envSet->state.obs.data.data();
@@ -890,12 +957,14 @@ void GGL::Learner::Start() {
 						}
 
 						// Now that we've inferred and stepped the env, we can add that stuff to the trajectories
+						bool trackModes = (config.ppo.normalizeAdvantages == AdvantageNormMode::PER_MODE);
 						int i = 0;
 						for (int newPlayerIdx : newPlayerIndices) {
 							trajectories[newPlayerIdx].actions.push_back(curActions[newPlayerIdx]);
 							trajectories[newPlayerIdx].rewards += envSet->state.rewards[newPlayerIdx];
 							trajectories[newPlayerIdx].logProbs += newLogProbs[i];
 							if (collectValues) trajectories[newPlayerIdx].values.push_back(values[i]);
+							if (trackModes) trajectories[newPlayerIdx].modes.push_back(playerModes[newPlayerIdx]);
 							i++;
 						}
 
@@ -997,6 +1066,8 @@ void GGL::Learner::Start() {
 
 						int numToIncrement = RS_MIN(config.maxReturnSamples, tReturns.size(0));
 						if (numToIncrement > 0) {
+							if (config.maxReturnStatCount > 0)
+								returnStat->CapCount(config.maxReturnStatCount);
 							auto selectedReturns = tReturns.index_select(0, torch::randint(tReturns.size(0), { (int64_t)numToIncrement }));
 							returnStat->Increment(TENSOR_TO_VEC<float>(selectedReturns));
 						}
@@ -1004,6 +1075,57 @@ void GGL::Learner::Start() {
 					report["GAE/Avg Return"] = tReturns.abs().mean().item<float>();
 					report["GAE/Avg Advantage"] = tAdvantages.abs().mean().item<float>();
 					report["GAE/Avg Val Target"] = tTargetVals.abs().mean().item<float>();
+					{
+						float targetVar = tTargetVals.var(false).item<float>();
+						if (targetVar > 1e-8f) {
+							float errVar = (tTargetVals - tValPreds.slice(0, 0, tTargetVals.size(0))).var(false).item<float>();
+							report["Critic Explained Variance"] = 1.f - errVar / targetVar;
+						}
+					}
+
+					// Normalize policy advantages AFTER tTargetVals has been computed, so critic targets remain in
+					// exact return-standardized units while policy gradients are zero-mean and balanced across modes.
+					if (config.ppo.normalizeAdvantages == AdvantageNormMode::ALL && tAdvantages.size(0) >= 8) {
+						float mean = tAdvantages.mean().item<float>();
+						float std = std::max(tAdvantages.std(false).item<float>(), 1e-5f);
+						report["GAE/Raw Adv STD"] = std;
+						tAdvantages = (tAdvantages - mean) * (1.f / std);
+					} else if (config.ppo.normalizeAdvantages == AdvantageNormMode::PER_MODE &&
+					           (int64_t)combinedTraj.modes.size() == tAdvantages.size(0)) {
+						tAdvantages = tAdvantages.contiguous();
+						float* advPtr = tAdvantages.data_ptr<float>();
+						const uint8_t* modePtr = combinedTraj.modes.data();
+						int64_t n = tAdvantages.size(0);
+
+						double sum[3] = {}, sumSq[3] = {};
+						int64_t cnt[3] = {};
+						for (int64_t idx = 0; idx < n; idx++) {
+							uint8_t m = modePtr[idx] < 3 ? modePtr[idx] : 0;
+							double v = advPtr[idx];
+							sum[m] += v;
+							sumSq[m] += v * v;
+							cnt[m]++;
+						}
+						static const char* MODE_STD_NAMES[3] = {
+							"GAE/Raw Adv STD 1v1", "GAE/Raw Adv STD 2v2", "GAE/Raw Adv STD 3v3"
+						};
+						float mean[3] = {}, invStd[3] = { 1.f, 1.f, 1.f };
+						for (int m = 0; m < 3; m++) {
+							if (cnt[m] >= 8) {
+								double mu = sum[m] / cnt[m];
+								double var = std::max(0.0, sumSq[m] / cnt[m] - mu * mu);
+								double sd = std::max(std::sqrt(var), 1e-5);
+								mean[m] = (float)mu;
+								invStd[m] = (float)(1.0 / sd);
+								report[MODE_STD_NAMES[m]] = (float)sd;
+							}
+						}
+						for (int64_t idx = 0; idx < n; idx++) {
+							uint8_t m = modePtr[idx] < 3 ? modePtr[idx] : 0;
+							if (cnt[m] >= 8)
+								advPtr[idx] = (advPtr[idx] - mean[m]) * invStd[m];
+						}
+					}
 
 					// Set experience buffer
 					experience.data.actions = tActions;
@@ -1025,13 +1147,12 @@ void GGL::Learner::Start() {
 				ppo->Learn(experience, report, isFirstIteration);
 				report["PPO Learn Time"] = learnTimer.Elapsed();
 
-				// Set metrics
+				// Set collection/consumption metrics
 				float consumptionTime = consumptionTimer.Elapsed();
 				report["Collection Time"] = collectionTime;
 				report["Consumption Time"] = consumptionTime;
 				report["Collection Steps/Second"] = stepsCollected / collectionTime;
 				report["Consumption Steps/Second"] = stepsCollected / consumptionTime;
-				report["Overall Steps/Second"] = stepsCollected / (collectionTime + consumptionTime);
 
 				uint64_t prevTimesteps = totalTimesteps;
 				totalTimesteps += stepsCollected;
@@ -1060,6 +1181,19 @@ void GGL::Learner::Start() {
 						Save();
 					}
 				}
+
+				// Contiguous wall-clock delta since the previous report boundary (or Learner construction on
+				// the first iteration): includes previous metric/console output, opponent switching, rollout,
+				// GAE, PPO updates, skill-tracker rating rounds, policy-version writes, and checkpoint saves,
+				// with zero unmeasured time between iterations.
+				auto wallNow = std::chrono::steady_clock::now();
+				double iterationWallTime = std::chrono::duration<double>(wallNow - lastIterationWallEnd).count();
+				lastIterationWallEnd = wallNow;
+				if (iterationWallTime < 1e-9)
+					iterationWallTime = 1e-9;
+				report["Iteration Time"] = iterationWallTime;
+				report["Overhead Time"] = std::max(0.0, iterationWallTime - ((double)collectionTime + (double)consumptionTime));
+				report["Overall Steps/Second"] = (double)stepsCollected / iterationWallTime;
 
 				report.Finish();
 

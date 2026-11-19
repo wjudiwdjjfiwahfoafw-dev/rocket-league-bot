@@ -70,6 +70,8 @@ namespace GGL {
 		// Standardize the returns to help the critic (don't disable this unless you know what you're doing)
 		bool standardizeReturns = true;
 		int maxReturnSamples = 150;
+		// Optional effective sample cap on returnStat (0 = unlimited) so returnStd can adapt smoothly after reward changes.
+		int64_t maxReturnStatCount = 0;
 
 		// Will automatically add the rewards to metrics
 		bool addRewardsToMetrics = true;
@@ -94,6 +96,8 @@ namespace GGL {
 
 		bool trainAgainstOldVersions = false;
 		float trainAgainstOldChance = 0.15f; // Chance (from 0 - 1) that an iteration will train against an old version
+		// Prioritized Fictitious Self-Play: favor stronger saved opponents while retaining coverage of older styles.
+		bool pfspOpponents = false;
 
 		// Mirrored view: 0 = off, 1 = right, -1 = left.
 		// With "right", a car on the left half of the field sees the whole game mirrored, and its action is mirrored back.

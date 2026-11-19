@@ -102,7 +102,3 @@ if (MSVC)
                  ${TORCH_DLLS}
                  $<TARGET_FILE_DIR:GigaLearnCPP>)
 endif (MSVC)
-# Optional offline policy-calibration utility; not part of the default trainer build.
-add_executable(CalibratePolicy EXCLUDE_FROM_ALL "${CMAKE_CURRENT_SOURCE_DIR}/../tools/calibrate_policy.cpp")
-target_link_libraries(CalibratePolicy PRIVATE "${TORCH_LIBRARIES}")
-set_target_properties(CalibratePolicy PROPERTIES CXX_STANDARD 17 OUTPUT_NAME calibrate_policy)

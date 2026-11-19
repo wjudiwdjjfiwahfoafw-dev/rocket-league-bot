@@ -48,9 +48,10 @@ def log_stage(run, campaign, entry, best_steps):
 
 
 def log_audit(run, state):
+    audit = state.get('audit') or {}
     for name, step in [('Parent', state['config']['parent_steps']), ('Best', state['best']['steps']),
                        ('Latest', state['history'][-1]['steps'])]:
-        for metric, value in state['audit'][str(step)].items():
+        for metric, value in (audit.get(str(step)) or {}).items():
             run.summary[f'Audit/{name} {metric}'] = value
 
 
