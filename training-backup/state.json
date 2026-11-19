@@ -91,7 +91,7 @@
       "training-backup/learner/policy_versions/3137998278"
     ]
   },
-  "pool_sha256": "aa048b453da50d8c7c96913692d3e4d70bd141b5247cbd6519fe11589539d81c",
+  "pool_sha256": "c2d02f8b29da1e5e1f3ffe9aa9854a135a11b9cd3cb53722e850d226c3b7c234",
   "history": [
     {
       "stage": 0,
@@ -254,28 +254,49 @@
         "Ranking": 1701.108116997613
       },
       "promoted": false
+    },
+    {
+      "stage": 8,
+      "start_steps": 3337121412,
+      "steps": 3351706542,
+      "train_seconds": 925.8135920500008,
+      "wall_seconds": 1211.585706422,
+      "steps_per_second": 12038.050566865919,
+      "screen": {
+        "1v1": 1554.8495686848958,
+        "2v2": 1777.7340983072916,
+        "3v3": 1730.7654825846355,
+        "Ranking": 1687.783049858941
+      },
+      "confirm": {
+        "1v1": 1582.6666829427083,
+        "2v2": 1800.0903279622396,
+        "3v3": 1774.711846923828,
+        "Ranking": 1719.1562859429253
+      },
+      "promoted": true
     }
   ],
   "best": {
-    "steps": 3295689882,
+    "steps": 3351706542,
     "screen": {
-      "1v1": 1548.6899658203124,
-      "2v2": 1739.4475423177084,
-      "3v3": 1699.1083862304688,
-      "Ranking": 1662.4152981228299
+      "1v1": 1554.8495686848958,
+      "2v2": 1777.7340983072916,
+      "3v3": 1730.7654825846355,
+      "Ranking": 1687.783049858941
     },
     "confirm": {
-      "1v1": 1566.3868794759114,
-      "2v2": 1800.7024495442708,
-      "3v3": 1758.8894022623697,
-      "Ranking": 1708.659577094184
+      "1v1": 1582.6666829427083,
+      "2v2": 1800.0903279622396,
+      "3v3": 1774.711846923828,
+      "Ranking": 1719.1562859429253
     }
   },
   "pending": {
-    "stage": 8,
-    "start_steps": 3337121412,
+    "stage": 9,
+    "start_steps": 3351706542,
     "seconds": 0,
-    "wall_seconds": 925.814247571001,
+    "wall_seconds": 654.5730561569999,
     "trained": false
   },
   "status": "paused",
@@ -285,6 +306,22 @@
     "reward_metrics": true,
     "throughput_profile": "cpu-20k",
     "player_metrics": true,
-    "continuous": true
+    "continuous": true,
+    "evolving_opponents": true,
+    "opponent_pool_size": 10,
+    "promotion_margin": 50.0,
+    "pool_generation": 0,
+    "pool_steps": [
+      2661279888,
+      2729865360,
+      2800066152,
+      2836021944,
+      2988686064,
+      3137998278,
+      3256829382,
+      3282071802,
+      3309403092,
+      3337121412
+    ]
   }
 }
