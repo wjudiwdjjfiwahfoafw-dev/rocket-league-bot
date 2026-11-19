@@ -12,7 +12,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT = ROOT / 'training-backup'
-WORK = ROOT / 'results/ranking_3043214022/campaign'
+WORK = ROOT / 'results/weights1700/campaign'
 
 
 def verify(snapshot):
@@ -39,7 +39,7 @@ def restore(snapshot=SNAPSHOT, work=WORK):
     return json.loads((work / 'state.json').read_text())
 
 
-def build_resume_command(state, work, without_monitor=False, backup_interval=1800):
+def build_resume_command(state, work, without_services=False, backup_interval=1800):
     config = state['config']
     cmd = [sys.executable, str(ROOT / 'tools/train_ranked.py'), '--base', config['base'],
            '--out', str(work.relative_to(ROOT)), '--minutes', str(sum(config['minutes'])),
@@ -69,15 +69,16 @@ def build_resume_command(state, work, without_monitor=False, backup_interval=180
     for flag in ('--mask-entropy', '--fuzzed-kickoffs', '--pfsp'):
         if flag in train_args:
             cmd.append(flag)
-    if not without_monitor:
-        cmd += ['--monitor', '--github-backup', '--backup-interval', str(backup_interval), '--wandb-bridge']
+    if not without_services:
+        cmd += ['--github-backup', '--backup-interval', str(backup_interval), '--wandb-bridge']
     return cmd
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--restore-only', action='store_true')
-    parser.add_argument('--without-monitor', action='store_true')
+    parser.add_argument('--without-services', action='store_true',
+                        help='Run trainer only, without automatic GitHub backup or W&B bridge')
     parser.add_argument('--backup-interval', type=int, default=1800,
                         help='Minimum seconds between GitHub auto-backups (default: 1800 = 30 minutes)')
     args = parser.parse_args()
@@ -91,7 +92,7 @@ def main():
     if state['status'] == 'complete':
         print('Campaign complete; create a new experiment to train further.')
         return
-    cmd = build_resume_command(state, work, without_monitor=args.without_monitor,
+    cmd = build_resume_command(state, work, without_services=args.without_services,
                                backup_interval=args.backup_interval)
     print('Resuming only because this script was explicitly invoked.', flush=True)
     subprocess.run(cmd, cwd=ROOT, check=True)

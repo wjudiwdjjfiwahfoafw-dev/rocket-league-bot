@@ -1,4 +1,4 @@
-# CMake
+# CMake & Ninja
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles
@@ -10,12 +10,10 @@ install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
 _deps
-
-# Ninja
 .ninja*
 build.ninja
 
-# Build-related
+# Build outputs
 RocketSim.Dir/
 build/
 x86/
@@ -32,13 +30,14 @@ out/
 *.pyd
 *.whl
 
-# Arena collision mesh files
+# Simulator meshes & raw binaries
 *.cmf
-
-# Raw binary files
 *.bin
+libtorch
+RUN.lnk
 
-# Visual Studio (not using anything VS-related)
+# Editors / IDEs
+.idea/
 .vs/
 *.vcxproj
 *.sln
@@ -46,28 +45,11 @@ out/
 *.user
 CMakeSettings.json
 
-# Anything starting with three underscores
+# Scratch / local runtime artifacts (canonical paused snapshot lives in training-backup/)
 ___*
-
-# Don't include libtorch if in local dir
-libtorch
-
-/wandb
-
-RUN.lnk
-
-# Python tool bytecode
 __pycache__/
-
-# Transient campaign coordination and W&B diagnostics (keep the syncable .wandb run)
-/results/**/.lock
-/results/**/wandb/latest-run
-/results/**/wandb/debug*.log
-/results/**/wandb/offline-run-*/logs/
-
-# Writable campaign restored from the canonical committed training-backup/.
-/results/ranking_3043214022/campaign/
-# Local-only W&B segments/exports; durable numeric metrics live in training-backup/.
-/results/**/wandb/
-# Target-1700 writable run; canonical resumable state is in training-backup/.
-/results/weights1700/campaign/
+/wandb/
+/metrics/
+/metrics_1v1_2v2/
+/checkpoints/
+/results/

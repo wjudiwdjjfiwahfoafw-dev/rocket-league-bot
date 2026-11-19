@@ -17,14 +17,18 @@ def main():
     os.chdir(REPO)
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--bot', default='build/GigaLearnBot')
-    p.add_argument('--base', type=Path, default=Path('checkpoints/3043214022'))
+    p.add_argument('--base', type=Path, default=None,
+                   help='Full numbered checkpoint directory (default: newest in training-backup/best)')
+    p.add_argument('--pool', type=Path, default=Path('training-backup/pool'),
+                   help='Policy versions pool directory')
     args = p.parse_args()
+    base = args.base if args.base is not None else newest(REPO / 'training-backup/best')
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         ckpts = root / 'ckpt'
-        shutil.copytree(args.base, ckpts / args.base.name)
-        shutil.copytree(args.base.parent / 'policy_versions', ckpts / 'policy_versions')
-        start = int(args.base.name)
+        shutil.copytree(base, ckpts / base.name)
+        shutil.copytree(args.pool, ckpts / 'policy_versions')
+        start = int(base.name)
         # In a vs-old iteration only half the cars belong to the learner. Counting both teams
         # in the stop callback used to stop before this absolute target was actually reached.
         cmd = [args.bot, '--checkpoints', str(ckpts), '--model', 's', '--modes', '1v1,2v2,3v3',

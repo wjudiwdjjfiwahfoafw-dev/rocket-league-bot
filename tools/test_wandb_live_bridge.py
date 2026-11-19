@@ -85,7 +85,7 @@ class WandbLiveBridgeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._make_campaign(root, num_rows=6)
-            snap = bridge.read_campaign_snapshot(root, status_url='https://8080-demo.e2b.app/status.json')
+            snap = bridge.read_campaign_snapshot(root)
             self.assertEqual(len(snap['rows']), 6)
             body, included = bridge.encode_snapshot_body(snap)
             self.assertEqual(included, 6)
@@ -93,7 +93,6 @@ class WandbLiveBridgeTest(unittest.TestCase):
 
             decoded = bridge.decode_snapshot_body(body)
             self.assertEqual(decoded['run_id'], snap['run_id'])
-            self.assertEqual(decoded['status_url'], 'https://8080-demo.e2b.app/status.json')
             self.assertEqual(len(decoded['rows']), 6)
 
             events, new_stages, summary = bridge.build_wandb_events(decoded, last_step=-1, logged_stages=set())

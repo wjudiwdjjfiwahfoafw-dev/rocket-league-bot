@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Sandbox metrics viewer and GitHub checkpoint backup worker. No external assets."""
+"""Headless GitHub checkpoint backup worker for ranked training campaigns."""
 import argparse
 import fcntl
 import hashlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +28,7 @@ def signature(path):
             for p in sorted(path.rglob('*')) if p.is_file()]
 
 
-def assess_goal(state, target=1600.0):
+def assess_goal(state, target=1700.0):
     best = state.get('best') or {}
     screen = (best.get('screen') or {}).get('Ranking')
     confirm = (best.get('confirm') or {}).get('Ranking')
@@ -40,44 +38,6 @@ def assess_goal(state, target=1600.0):
             'selection_met': selection_met,
             'verified': selection_met and audit is not None and audit >= target,
             'screen_gap': max(0.0, target - screen) if screen is not None else None}
-
-
-def calibration_results():
-    results = []
-    root = ROOT / 'results/target1600-calibration'
-    if not root.exists():
-        return results
-    for trial in sorted(root.glob('temperature-*')):
-        record = {'name': trial.name}
-        for seed, rounds, key in [(1009, 40, 'screen'), (2003, 80, 'confirmation'), (4001, 80, 'audit')]:
-            files = list((trial / 'eval').glob(f'*-{seed}-{rounds}.json'))
-            if files:
-                raw = json.loads(files[0].read_text())
-                record[key] = {m: raw['ratings'][m]['average'] for m in ('1v1', '2v2', '3v3', 'Ranking')}
-        record['verified'] = all(record.get(k, {}).get('Ranking', 0) >= 1600
-                                 for k in ('screen', 'confirmation', 'audit'))
-        results.append(record)
-    return results
-
-
-def snapshot(campaign):
-    state = json.loads((campaign / 'state.json').read_text())
-    rows = {}
-    for path in sorted((campaign / 'metrics').glob('*.jsonl')):
-        for line in path.read_text().splitlines(keepends=True):
-            if line.endswith('\n') and line.strip():
-                row = json.loads(line)
-                rows[int(row['Total Timesteps'])] = row
-    wandb_bridge = None
-    bridge_path = campaign / 'wandb_bridge.json'
-    if bridge_path.is_file():
-        try:
-            wandb_bridge = json.loads(bridge_path.read_text())
-        except (OSError, ValueError):
-            wandb_bridge = None
-    return {'state': state, 'goal': assess_goal(state, state.get('target_ranking', 1600.0)),
-            'calibrations': calibration_results(), 'wandb_bridge': wandb_bridge,
-            'rows': [rows[k] for k in sorted(rows)]}
 
 
 def read_manifest_created(destination):
@@ -121,13 +81,17 @@ def backup(campaign, destination, branch, status, min_interval=0, now=None):
     local_head = git('rev-parse', 'HEAD')
     remote_line = git('ls-remote', 'origin', 'refs/heads/' + branch).split()
     if status.get('push_pending') or not remote_line or remote_line[0] != local_head:
-        git('push', 'origin', branch)
+        try:
+            git('push', 'origin', branch)
+        except subprocess.CalledProcessError:
+            git('pull', '--rebase', '--autostash', 'origin', branch)
+            git('push', 'origin', branch)
         status['push_pending'] = False
     candidates = sorted((p for p in (campaign / 'learner').iterdir() if p.name.isdecimal()), key=lambda p: int(p.name))
     latest = candidates[-1]
     state = json.loads((campaign / 'state.json').read_text())
     if state.get('best') is None:
-        raise RuntimeError('Waiting for baseline evaluation; prior remote snapshot and source weights remain protected')
+        raise RuntimeError('Waiting for baseline evaluation; prior remote snapshot remains protected')
     sources = [latest, campaign / 'learner/policy_versions', campaign / 'pool',
                campaign / 'best' / str(state['best']['steps'])]
     before = [signature(p) for p in sources]
@@ -143,6 +107,7 @@ def backup(campaign, destination, branch, status, min_interval=0, now=None):
         status.update(last_success=done, next_due=(done + min_interval) if min_interval > 0 else None,
                       checkpoint=int(latest.name), commit=git('rev-parse', 'HEAD'), push_pending=False, error=None)
         return True
+    (ROOT / 'build').mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix='backup-') as tmp:
         staging = Path(tmp) / 'snapshot'
         staging.mkdir()
@@ -157,14 +122,13 @@ def backup(campaign, destination, branch, status, min_interval=0, now=None):
             if state['status'] != 'paused':
                 state['pending']['seconds'] = 0  # crash snapshot: don't claim unbacked trainer time
                 state['pending']['trained'] = False
-            # A graceful pause has already saved this exact boundary and elapsed budget.
         state['history'] = history
         state['status'] = 'paused' if state['status'] != 'complete' else 'complete'
         (staging / 'state.json').write_text(json.dumps(state, indent=2) + '\n')
         for folder in ('metrics', 'eval'):
             shutil.copytree(campaign / folder, staging / folder)
         hashes = {str(p.relative_to(staging)): hashlib.sha256(p.read_bytes()).hexdigest()
-                  for p in staging.rglob('*') if p.is_file()}
+                  for p in sorted(staging.rglob('*')) if p.is_file()}
         created_ts = time.time() if now is None else cur_now
         (staging / 'manifest.json').write_text(json.dumps({'checkpoint': steps, 'identity': identity,
             'created': created_ts, 'sha256': hashes, 'source_commit': git('rev-parse', 'HEAD')}, indent=2) + '\n')
@@ -195,8 +159,6 @@ def backup(campaign, destination, branch, status, min_interval=0, now=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('campaign', type=Path)
-    parser.add_argument('--port', type=int, default=8080)
-    parser.add_argument('--backup', action='store_true', help='Commit checkpoint snapshots and push current branch')
     parser.add_argument('--interval', type=int, default=DEFAULT_BACKUP_INTERVAL,
                         help='Minimum seconds between automatic GitHub backups (default: 1800 = 30 minutes)')
     args = parser.parse_args()
@@ -210,52 +172,29 @@ def main():
     dest = ROOT / 'training-backup'
     prior_ts = read_manifest_created(dest)
     status = {
-        'enabled': args.backup,
+        'enabled': True,
         'interval_seconds': interval,
         'last_success': prior_ts,
-        'next_due': (prior_ts + interval) if (args.backup and prior_ts is not None) else None,
+        'next_due': (prior_ts + interval) if prior_ts is not None else None,
         'push_pending': False,
         'error': None,
     }
-    def worker():
-        while True:
-            wait_s = seconds_until_backup_due(dest, status, interval)
-            if wait_s > 0:
-                status['next_due'] = time.time() + wait_s
-                time.sleep(wait_s)
-                continue
-            try:
-                ran = backup(args.campaign, dest, branch, status, min_interval=interval)
-                if ran:
-                    print('Backup verified:', json.dumps(status), flush=True)
-                    time.sleep(max(1.0, seconds_until_backup_due(dest, status, interval)))
-                else:
-                    time.sleep(max(1.0, seconds_until_backup_due(dest, status, interval)))
-            except Exception as exc:
-                status['error'] = str(exc)
-                print('Backup pending/failed:', str(exc), flush=True)
-                time.sleep(min(BACKUP_RETRY_SECONDS, interval))
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path == '/':
-                data = (ROOT / 'tools/training_view.html').read_bytes()
-                content_type = 'text/html; charset=utf-8'
-            elif self.path == '/status.json':
-                data = json.dumps({**snapshot(args.campaign), 'backup': dict(status)}, allow_nan=False).encode()
-                content_type = 'application/json'
-            else:
-                self.send_error(404)
-                return
-            self.send_response(200)
-            self.send_header('Content-Type', content_type)
-            self.send_header('Cache-Control', 'no-store')
-            self.send_header('Content-Length', str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-    if args.backup:
-        threading.Thread(target=worker, daemon=True).start()
-    print(f'Training metrics and backup status on port {args.port}', flush=True)
-    ThreadingHTTPServer(('0.0.0.0', args.port), Handler).serve_forever()
+    print(f'GitHub checkpoint backup worker active (interval={interval}s, branch={branch})', flush=True)
+    while True:
+        wait_s = seconds_until_backup_due(dest, status, interval)
+        if wait_s > 0:
+            status['next_due'] = time.time() + wait_s
+            time.sleep(wait_s)
+            continue
+        try:
+            ran = backup(args.campaign, dest, branch, status, min_interval=interval)
+            if ran:
+                print('Backup verified:', json.dumps(status), flush=True)
+            time.sleep(max(1.0, seconds_until_backup_due(dest, status, interval)))
+        except Exception as exc:
+            status['error'] = str(exc)
+            print('Backup pending/failed:', str(exc), flush=True)
+            time.sleep(min(BACKUP_RETRY_SECONDS, interval))
 
 
 if __name__ == '__main__':

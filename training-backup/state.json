@@ -1,7 +1,7 @@
 {
   "config": {
-    "base": "checkpoints/3244539846",
-    "preset_sha256": "0157781c2e10d1973db968319e90da89755a54c2e68a4ffcfc15bf34b244ced4",
+    "base": "training-backup/best/3244539846",
+    "preset_sha256": "093b308ff3d18c480fb3526015b692d112eba35ec41a544e6398bfa559aa2682",
     "parent_steps": 3244539846,
     "seed": 20261130,
     "screen_seed": 1009,
@@ -87,8 +87,8 @@
     "protocol": "anchored-v1",
     "reference_pool": "training-backup/pool",
     "extra_versions": [
-      "checkpoints/3035220582",
-      "checkpoints/3137998278"
+      "training-backup/learner/policy_versions/3035220582",
+      "training-backup/learner/policy_versions/3137998278"
     ]
   },
   "pool_sha256": "aa048b453da50d8c7c96913692d3e4d70bd141b5247cbd6519fe11589539d81c",

@@ -1147,13 +1147,12 @@ void GGL::Learner::Start() {
 				ppo->Learn(experience, report, isFirstIteration);
 				report["PPO Learn Time"] = learnTimer.Elapsed();
 
-				// Set metrics
+				// Set collection/consumption metrics
 				float consumptionTime = consumptionTimer.Elapsed();
 				report["Collection Time"] = collectionTime;
 				report["Consumption Time"] = consumptionTime;
 				report["Collection Steps/Second"] = stepsCollected / collectionTime;
 				report["Consumption Steps/Second"] = stepsCollected / consumptionTime;
-				report["Overall Steps/Second"] = stepsCollected / (collectionTime + consumptionTime);
 
 				uint64_t prevTimesteps = totalTimesteps;
 				totalTimesteps += stepsCollected;
@@ -1182,6 +1181,19 @@ void GGL::Learner::Start() {
 						Save();
 					}
 				}
+
+				// Contiguous wall-clock delta since the previous report boundary (or Learner construction on
+				// the first iteration): includes previous metric/console output, opponent switching, rollout,
+				// GAE, PPO updates, skill-tracker rating rounds, policy-version writes, and checkpoint saves,
+				// with zero unmeasured time between iterations.
+				auto wallNow = std::chrono::steady_clock::now();
+				double iterationWallTime = std::chrono::duration<double>(wallNow - lastIterationWallEnd).count();
+				lastIterationWallEnd = wallNow;
+				if (iterationWallTime < 1e-9)
+					iterationWallTime = 1e-9;
+				report["Iteration Time"] = iterationWallTime;
+				report["Overhead Time"] = std::max(0.0, iterationWallTime - ((double)collectionTime + (double)consumptionTime));
+				report["Overall Steps/Second"] = (double)stepsCollected / iterationWallTime;
 
 				report.Finish();
 

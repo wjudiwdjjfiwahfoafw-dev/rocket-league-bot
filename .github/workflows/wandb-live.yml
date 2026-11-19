@@ -6,10 +6,6 @@ on:
       - 'arena/**'
   workflow_dispatch:
     inputs:
-      status_url:
-        description: 'Optional live preview /status.json URL override'
-        required: false
-        default: ''
       issue:
         description: 'Optional telemetry GitHub Issue number override'
         required: false
@@ -40,8 +36,6 @@ permissions:
   contents: read
   issues: write
 
-# Keep a single continuous streamer per branch; 30-min backup pushes queue/no-op without killing it,
-# while manual workflow_dispatch starts a fresh streamer immediately (e.g. after setting WANDB_API_KEY).
 concurrency:
   group: wandb-live-${{ github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
@@ -49,24 +43,10 @@ concurrency:
 jobs:
   relay:
     name: Stream live metrics to Weights & Biases
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'Back up ranked checkpoint')
     runs-on: ubuntu-latest
     timeout-minutes: 355
     steps:
-      - name: Checkout relay tool & backup fallback
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          sparse-checkout: |
-            tools
-            training-backup/state.json
-            training-backup/metrics
-            training-backup/eval
-          sparse-checkout-cone-mode: false
-
-      - name: Set up Python & install wandb
-        run: |
-          python3 -m pip install --upgrade --quiet pip "wandb>=0.18,<1.0"
-
       - name: Locate active branch telemetry issue
         id: discover
         env:
@@ -90,16 +70,33 @@ jobs:
                   break
           PY
           )
-          echo "Found telemetry issue: ${ISSUE_NUM:-none}"
+          echo "Active telemetry issue: ${ISSUE_NUM:-none (training paused — skipping relay)}"
           echo "issue=${ISSUE_NUM}" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout relay tool & backup fallback
+        if: steps.discover.outputs.issue != ''
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            tools
+            training-backup/state.json
+            training-backup/metrics
+            training-backup/eval
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python & install wandb
+        if: steps.discover.outputs.issue != ''
+        run: |
+          python3 -m pip install --upgrade --quiet pip "wandb>=0.18,<1.0"
+
       - name: Stream live training metrics to W&B
+        if: steps.discover.outputs.issue != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           WANDB_PROJECT: ${{ inputs.project || vars.WANDB_PROJECT || 'rocket-league-ggl' }}
           WANDB_ENTITY: ${{ inputs.entity || vars.WANDB_ENTITY || '' }}
-          STATUS_URL: ${{ inputs.status_url }}
           ISSUE_NUM: ${{ steps.discover.outputs.issue }}
           POLL_SECONDS: ${{ inputs.poll_seconds || '15' }}
           MAX_MINUTES: ${{ inputs.max_minutes || '330' }}
@@ -108,16 +105,11 @@ jobs:
           ARGS=(
             relay
             --repo "${{ github.repository }}"
+            --issue "$ISSUE_NUM"
             --fallback-campaign training-backup
             --interval "$POLL_SECONDS"
             --max-minutes "$MAX_MINUTES"
           )
-          if [ -n "$STATUS_URL" ]; then
-            ARGS+=(--status-url "$STATUS_URL")
-          fi
-          if [ -n "$ISSUE_NUM" ]; then
-            ARGS+=(--issue "$ISSUE_NUM")
-          fi
           if [ "$REQUIRE_KEY" != "true" ]; then
             ARGS+=(--allow-anonymous)
           fi

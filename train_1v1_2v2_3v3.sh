@@ -6,11 +6,9 @@
 #          ./train_1v1_2v2_3v3.sh --wandb --wandb-project my-project    # also log to Weights & Biases
 #                                                                   # (needs WANDB_API_KEY or `wandb login`)
 #
-# Loads the newest numbered checkpoint and the policy_versions pool from ./checkpoints.
-# If you previously trained in checkpoints_1v1_2v2, pass --checkpoints checkpoints_1v1_2v2.
-# For an experiment, copy the checkpoint folder and pass --checkpoints <copy> --new-run.
-# Saves every 2M timesteps, after rating sessions, and on exit; only the newest two checkpoints are kept by default.
-# Ctrl+C finishes the current iteration, saves, and exits.
+# Loads the newest numbered checkpoint and policy_versions pool from --checkpoints.
+# Saves periodically, after rating sessions, and on exit; only the newest two checkpoints are kept by default.
+# Ctrl+C / SIGTERM finishes the current iteration, saves, and exits.
 #
 # Each mode gets 15 arenas. The small slot-encoder model and its left-mirrored view match the shipped checkpoint.
 # 15% of iterations train against the saved policy pool rather than pure self-play.

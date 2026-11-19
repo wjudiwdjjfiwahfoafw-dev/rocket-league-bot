@@ -14,15 +14,15 @@ from training_service import (
 
 class GoalTests(unittest.TestCase):
     def test_requires_all_three_fixed_measurements(self):
-        state = {'best': {'steps': 1, 'screen': {'Ranking': 1601},
-                          'confirm': {'Ranking': 1599}}}
+        state = {'best': {'steps': 1, 'screen': {'Ranking': 1701},
+                          'confirm': {'Ranking': 1699}}}
         self.assertFalse(assess_goal(state)['selection_met'])
-        state['best']['confirm']['Ranking'] = 1600
+        state['best']['confirm']['Ranking'] = 1700
         self.assertTrue(assess_goal(state)['selection_met'])
         self.assertFalse(assess_goal(state)['verified'])
-        state['audit'] = {'1': {'Ranking': 1599}}
+        state['audit'] = {'1': {'Ranking': 1699}}
         self.assertFalse(assess_goal(state)['verified'])
-        state['audit']['1']['Ranking'] = 1600
+        state['audit']['1']['Ranking'] = 1700
         self.assertTrue(assess_goal(state)['verified'])
 
     def test_missing_measurements(self):

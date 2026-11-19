@@ -90,9 +90,11 @@ class RestoreTests(unittest.TestCase):
             },
         }
         cmd = resume_training.build_resume_command(
-            state, resume_training.ROOT / 'results/weights1700-v2/campaign'
+            state, resume_training.ROOT / 'results/weights1700-v3/campaign'
         )
-        for token in ('--backup-interval', '1800', '--mask-entropy', '--fuzzed-kickoffs',
+        self.assertNotIn('--monitor', cmd)
+        for token in ('--github-backup', '--backup-interval', '1800', '--wandb-bridge',
+                      '--mask-entropy', '--fuzzed-kickoffs',
                       '--pfsp', '--norm-advantages', 'mode', '--epochs', '2',
                       '--critic-lr', '0.0002', '--tactical-state-prob', '0.22',
                       '--extra-versions', 'checkpoints/3137998278'):

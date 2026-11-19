@@ -174,7 +174,10 @@ def promote(screen, confirm, best):
 
 def campaign(args):
     out, learner = args.out, args.out / 'learner'
-    base = checkpoint(args.base)
+    statefile = out / 'state.json'
+    base = checkpoint(args.base) if not statefile.exists() else Path(args.base)
+    if not base.name.isdecimal():
+        raise ValueError(f'Not a numbered checkpoint path: {base}')
     if not args.bot.is_file():
         raise ValueError(f'Build {args.bot} before starting the campaign')
     plan = minutes_plan(args.minutes, args.pilot_minutes, args.block_minutes)
@@ -221,7 +224,6 @@ def campaign(args):
     extra_versions = [str(p) for p in (getattr(args, 'extra_versions', None) or [])]
     if extra_versions:
         config['extra_versions'] = extra_versions
-    statefile = out / 'state.json'
     if not statefile.exists():
         if any(p.name != '.lock' for p in out.iterdir()):
             raise ValueError(f'Refusing to overwrite a non-empty campaign directory: {out}')
@@ -236,6 +238,8 @@ def campaign(args):
             extra = Path(extra)
             if not extra.name.isdecimal() or not (extra / 'POLICY.lt').is_file():
                 raise ValueError(f'Invalid --extra-versions entry: {extra}')
+            if int(extra.name) > int(base.name):
+                raise ValueError(f'--extra-versions entry {extra.name} is newer than --base {base.name}')
             vdest = learner / 'policy_versions' / extra.name
             if not vdest.exists():
                 vdest.mkdir(parents=True)
@@ -275,18 +279,13 @@ def campaign(args):
         wb = ranked_wandb.start(out, config, f'ranking-{base.name}')
         state['wandb_dir'] = str(Path(wb.dir).parent.relative_to(REPO)) if Path(wb.dir).is_relative_to(REPO) else str(Path(wb.dir).parent)
     service = None
-    if getattr(args, 'monitor', False) or getattr(args, 'github_backup', False):
-        service_cmd = [sys.executable, str(REPO / 'tools/training_service.py'), str(out),
-                       '--port', str(args.monitor_port),
-                       '--interval', str(getattr(args, 'backup_interval', 1800))]
-        if args.github_backup:
-            service_cmd.append('--backup')
-        service = subprocess.Popen(service_cmd)
+    if getattr(args, 'github_backup', False):
+        service = subprocess.Popen([sys.executable, str(REPO / 'tools/training_service.py'), str(out),
+                                    '--interval', str(getattr(args, 'backup_interval', 1800))])
     bridge_proc = None
     if getattr(args, 'wandb_bridge', False):
         bridge_proc = subprocess.Popen([sys.executable, str(REPO / 'tools/wandb_live_bridge.py'),
-                                        'publish', str(out), '--port', str(args.monitor_port),
-                                        '--interval', '20'])
+                                        'publish', str(out), '--interval', '20'])
     streamer = None
     if getattr(args, 'wandb_online', False):
         streamer = subprocess.Popen([sys.executable, str(REPO / 'tools/ranked_wandb.py'),
@@ -298,15 +297,19 @@ def campaign(args):
         for i, minutes in enumerate([0, *plan]):
             if i < len(state['history']):
                 continue
+            stage_wall_start = time.monotonic()
             if state['pending'] is None:
-                state['pending'] = dict(stage=i, start_steps=int(newest(learner).name), seconds=0, trained=False)
+                state['pending'] = dict(stage=i, start_steps=int(newest(learner).name), seconds=0, wall_seconds=0, trained=False)
             pending = state['pending']
+            prior_wall = float(pending.get('wall_seconds', pending.get('seconds', 0)) or 0.0)
             if minutes and not pending['trained']:
                 state['status'] = 'training'
                 write(statefile, state)
                 start, previous = time.monotonic(), pending['seconds']
                 def heartbeat():
-                    pending['seconds'] = previous + time.monotonic() - start
+                    now = time.monotonic()
+                    pending['seconds'] = previous + now - start
+                    pending['wall_seconds'] = prior_wall + now - stage_wall_start
                     write(statefile, state)
                 cmd = ['bash', 'train_1v1_2v2_3v3.sh', '--checkpoints', learner, *train_args,
                        '--seed', args.seed + i, '--run-name', 'three-mode-ranking',
@@ -339,8 +342,13 @@ def campaign(args):
                     tmp.rename(dest)
                 state['best'] = dict(steps=steps, screen=screen, confirm=confirm)
             seconds = pending['seconds']
-            entry = dict(stage=i, start_steps=pending['start_steps'], steps=steps, train_seconds=seconds,
-                         steps_per_second=(steps - pending['start_steps']) / seconds if seconds else None,
+            wall_seconds = prior_wall + (time.monotonic() - stage_wall_start)
+            delta_steps = steps - pending['start_steps']
+            # Include 100% of stage wall-clock time (subprocess startup, rollout, PPO, saves,
+            # screen/confirmation evaluations, and checkpoint promotion copy).
+            entry = dict(stage=i, start_steps=pending['start_steps'], steps=steps,
+                         train_seconds=seconds, wall_seconds=wall_seconds,
+                         steps_per_second=(delta_steps / wall_seconds) if (minutes and wall_seconds > 0) else None,
                          screen=screen, confirm=confirm, promoted=won)
             state['history'].append(entry)
             state['pending'] = None
@@ -362,8 +370,13 @@ def campaign(args):
         # An untouched seed measures the selected checkpoint against the original baseline on the same scale.
         state['status'] = 'auditing'
         write(statefile, state)
-        state['audit'] = {p.name: evaluate(p, config['audit_seed'], 2 * args.rounds) for p in
-                          (base, out / 'best' / str(state['best']['steps']), newest(learner))}
+        audit_targets = []
+        if base.is_dir() and (base / 'POLICY.lt').is_file():
+            audit_targets.append(base)
+        for cand in (out / 'best' / str(state['best']['steps']), newest(learner)):
+            if all(p.name != cand.name for p in audit_targets):
+                audit_targets.append(cand)
+        state['audit'] = {p.name: evaluate(p, config['audit_seed'], 2 * args.rounds) for p in audit_targets}
         if wb is not None:
             ranked_wandb.log_audit(wb, state)
         state['status'] = 'complete'
@@ -408,9 +421,7 @@ def main():
     parser.add_argument('--wandb-offline', action='store_true', help='Write a syncable W&B run in --out; no credential or network needed')
     parser.add_argument('--wandb-online', action='store_true', help='Tail metrics to W&B online in a separate sandbox process; requires W&B credentials/network')
     parser.add_argument('--wandb-bridge', action='store_true', help='Stream live metrics to W&B via the GitHub Actions cloud relay even when direct W&B egress is blocked')
-    parser.add_argument('--monitor', action='store_true', help='Serve all recorded metrics in a browser')
-    parser.add_argument('--monitor-port', type=int, default=8080)
-    parser.add_argument('--github-backup', action='store_true', help='Automatically commit resumable snapshots and push the current branch every --backup-interval seconds (also starts monitor)')
+    parser.add_argument('--github-backup', action='store_true', help='Automatically commit resumable snapshots and push the current branch every --backup-interval seconds')
     parser.add_argument('--backup-interval', type=int, default=1800, help='Minimum seconds between GitHub auto-backups (default: 1800 = 30 minutes)')
     parser.add_argument('--reference-pool', type=Path, help='Explicit immutable opponent pool for a fresh experiment')
     parser.add_argument('--extra-versions', type=Path, nargs='*', help='Optional native checkpoints copied into learner/policy_versions only (frozen eval pool untouched)')

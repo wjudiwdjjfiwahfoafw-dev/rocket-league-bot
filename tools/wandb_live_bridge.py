@@ -6,16 +6,15 @@ Works even when direct outbound traffic from the training sandbox to api.wandb.a
 1. Sandbox publisher mode (`publish`):
    Tails a running campaign's durable `state.json` and `metrics/*.jsonl` (read-only, never
    acquiring the trainer lock) and publishes compact gzip+base64 metric snapshots to a single
-   dedicated GitHub Issue via `gh api` (`api.github.com`), plus the active live-preview
-   `/status.json` URL when available. Uses near-zero CPU and creates zero Git commits.
+   dedicated GitHub Issue via `gh api` (`api.github.com`). Uses near-zero CPU, runs no local
+   web server, and creates zero Git commits.
 
 2. Cloud / external relay mode (`relay`):
-   Runs anywhere with outbound access to `api.wandb.ai` (e.g. the included GitHub Actions
-   workflow `.github/workflows/wandb-live.yml`, or any external machine). Polls the live
-   preview `/status.json` endpoint first (with automatic fallback to the GitHub Issue live
-   payload and `training-backup/` snapshot) every few seconds and streams every training row,
-   frozen-pool Screen/Confirmation Elo rating, and held-out Audit summary idempotently into a
-   single resumable online W&B run (`step_metric='Total Timesteps'`).
+   Runs anywhere with outbound access to `api.wandb.ai` (e.g. `.github/workflows/wandb-live.yml`
+   or any external machine). Polls the GitHub Issue live telemetry feed (with `training-backup/`
+   fallback) and streams every training row, frozen-pool Screen/Confirmation Elo rating, and
+   held-out Audit summary idempotently into a single resumable online W&B run
+   (`step_metric='Total Timesteps'`).
 """
 import argparse
 import base64
@@ -248,7 +247,7 @@ def campaign_run_id(config, prefix='rlbot'):
     return f'{prefix}-{config.get("parent_steps", "run")}-{digest}'
 
 
-def read_campaign_snapshot(campaign: Path, status_url: str | None = None) -> dict:
+def read_campaign_snapshot(campaign: Path) -> dict:
     """Read atomic state.json + completed JSONL metric lines without locking the trainer."""
     state = json.loads((campaign / 'state.json').read_text())
     rows_by_step = {}
@@ -289,16 +288,13 @@ def read_campaign_snapshot(campaign: Path, status_url: str | None = None) -> dic
                 }
             except Exception:
                 continue
-    payload = {
+    return {
         'updated': time.time(),
         'run_id': campaign_run_id(state.get('config') or {}),
         'state': state,
         'rows': [rows_by_step[k] for k in sorted(rows_by_step)],
         'eval_extras': eval_extras,
     }
-    if status_url:
-        payload['status_url'] = status_url
-    return payload
 
 
 def encode_snapshot_body(snapshot: dict, max_b64: int = MAX_BODY_B64, min_step: int = -1) -> tuple[str, int]:
@@ -386,12 +382,15 @@ def build_wandb_events(snapshot: dict, last_step: int, logged_stages: set[int]) 
     target = float(state.get('target_ranking') or 1700.0)
     extras = snapshot.get('eval_extras') or {}
 
+    stage_boundaries = sorted(int(e['steps']) for e in (state.get('history') or []) if int(e.get('stage', 0)) > 0)
     events: dict[int, dict] = {}
+    prev_row = None
     for row in snapshot.get('rows') or []:
         if 'Total Timesteps' not in row:
             continue
         step = int(row['Total Timesteps'])
         if step <= last_step:
+            prev_row = row
             continue
         rec = events.setdefault(step, {'Total Timesteps': step})
         for k, v in row.items():
@@ -400,6 +399,15 @@ def build_wandb_events(snapshot: dict, last_step: int, logged_stages: set[int]) 
             if isinstance(v, (int, float)):
                 out_key = ('Live/' + k) if k.startswith('Rating/') else k
                 rec[out_key] = v
+        # Across a stage evaluation/restart boundary, fold fixed-pool eval, promotion copy,
+        # and trainer relaunch wall time into Overall Steps/Second so zero runtime is excluded.
+        if prev_row is not None and row.get('_time') and prev_row.get('_time'):
+            prev_step = int(prev_row['Total Timesteps'])
+            dt = float(row['_time']) - float(prev_row['_time'])
+            crossed_eval = any(prev_step <= b < step for b in stage_boundaries)
+            if crossed_eval and step > prev_step and 0.0 < dt <= 1800.0:
+                rec['Overall Steps/Second'] = (step - prev_step) / dt
+        prev_row = row
 
     new_stages: set[int] = set()
     best_screen_so_far = None
@@ -468,13 +476,6 @@ def build_wandb_events(snapshot: dict, last_step: int, logged_stages: set[int]) 
     return ordered, new_stages, summary
 
 
-def default_status_url(port: int = 8080) -> str | None:
-    sandbox_id = os.environ.get('E2B_SANDBOX_ID', '').strip()
-    if sandbox_id:
-        return f'https://{port}-{sandbox_id}.e2b.app/status.json'
-    return None
-
-
 def gh_api_json(method: str, endpoint: str, payload: dict | None = None, repo: str | None = None):
     if endpoint.startswith('/'):
         url = endpoint
@@ -539,7 +540,6 @@ def run_publisher(args):
     """Sandbox daemon: publish live metrics snapshots via GitHub API and write local relay status."""
     repo = args.repo or detect_repo()
     branch = subprocess.check_output(['git', 'branch', '--show-current'], cwd=ROOT, text=True).strip()
-    status_url = args.status_url if args.status_url is not None else default_status_url(args.port)
     issue_number = ensure_telemetry_issue(repo, branch, args.issue)
     status_file = args.status_file or (args.campaign / 'wandb_bridge.json')
 
@@ -550,7 +550,7 @@ def run_publisher(args):
         state_status = 'running'
         relay_ready = False
         try:
-            snap = read_campaign_snapshot(args.campaign, status_url=status_url)
+            snap = read_campaign_snapshot(args.campaign)
             state_status = (snap.get('state') or {}).get('status', 'running')
             comments = gh_api_json('GET', f'issues/{issue_number}/comments?per_page=50', repo=repo)
             secret = _load_local_wandb_key(args.key_file)
@@ -570,7 +570,6 @@ def run_publisher(args):
                 'history_len': len((snap['state'].get('history') or [])),
                 'status': state_status,
                 'audit': bool(snap['state'].get('audit')),
-                'status_url': status_url,
             }, sort_keys=True).encode()).hexdigest()
             if digest != last_digest:
                 gh_api_json('PATCH', f'issues/{issue_number}', {'body': body}, repo=repo)
@@ -587,7 +586,6 @@ def run_publisher(args):
                 'issue_number': issue_number,
                 'issue_url': f'https://github.com/{repo}/issues/{issue_number}',
                 'run_id': snap['run_id'],
-                'status_url': status_url,
                 'last_publish': time.time(),
                 'rows_published': included,
                 'rows_total': len(snap['rows']),
@@ -614,38 +612,19 @@ def run_publisher(args):
 
 
 def load_best_remote_snapshot(args, repo: str | None, gh_token: str | None) -> tuple[dict | None, str]:
-    """Fetch freshest telemetry snapshot: 1) direct HTTPS status_url, 2) GitHub Issue, 3) local fallback."""
-    candidates: list[tuple[int, int, str, dict]] = []
-    discovered_url = args.status_url
+    """Fetch freshest telemetry snapshot from the live GitHub Issue feed (with local snapshot fallback)."""
+    candidates: list[tuple[int, int, int, str, dict]] = []
 
-    # Read GitHub Issue payload (also discovers live preview URL automatically when rotated).
     if repo and args.issue:
         try:
             issue = fetch_url_json(f'https://api.github.com/repos/{repo}/issues/{args.issue}', token=gh_token)
             isnap = decode_snapshot_body(issue.get('body') or '')
             if isnap:
-                if not discovered_url and isnap.get('status_url'):
-                    discovered_url = isnap['status_url']
                 max_step = max((int(r['Total Timesteps']) for r in isnap.get('rows') or []), default=-1)
                 hist_len = len(((isnap.get('state') or {}).get('history')) or [])
                 candidates.append((2, hist_len, max_step, f'github-issue#{args.issue}', isnap))
         except Exception as exc:
             print(f'Issue poll note: {exc}', flush=True)
-
-    # Try direct live-preview /status.json for complete un-trimmed real-time rows.
-    if discovered_url:
-        try:
-            raw = fetch_url_json(discovered_url, timeout=8.0)
-            if 'state' in raw and 'rows' in raw:
-                raw.setdefault('run_id', campaign_run_id((raw['state'].get('config')) or {}))
-                # Merge eval_extras from issue snapshot if present.
-                if candidates and 'eval_extras' in candidates[0][4]:
-                    raw.setdefault('eval_extras', candidates[0][4]['eval_extras'])
-                max_step = max((int(r['Total Timesteps']) for r in raw.get('rows') or []), default=-1)
-                hist_len = len((raw['state'].get('history')) or [])
-                candidates.append((3, hist_len, max_step, 'live-preview-http', raw))
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-            print(f'Preview poll note ({discovered_url}): {exc}', flush=True)
 
     # Optional local fallback (e.g. checked-out training-backup/ inside GitHub Actions).
     if args.fallback_campaign and (args.fallback_campaign / 'state.json').is_file():
@@ -660,7 +639,7 @@ def load_best_remote_snapshot(args, repo: str | None, gh_token: str | None) -> t
     if not candidates:
         return None, 'none'
 
-    # Prefer live preview > live GitHub Issue > checked-out backup, and merge all rows with same run_id.
+    # Prefer live GitHub Issue over checked-out backup, and merge all rows with same run_id.
     candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
     _, _, _, best_source, best_snap = candidates[0]
     target_run_id = best_snap.get('run_id')
@@ -873,8 +852,6 @@ def main():
     pub.add_argument('campaign', type=Path)
     pub.add_argument('--repo', help='GitHub owner/repo (default: inferred from git origin)')
     pub.add_argument('--issue', type=int, help='Existing telemetry issue number (default: find or create)')
-    pub.add_argument('--status-url', help='Live preview /status.json URL (default: inferred from E2B_SANDBOX_ID)')
-    pub.add_argument('--port', type=int, default=8080)
     pub.add_argument('--interval', type=float, default=20.0)
     pub.add_argument('--status-file', type=Path, help='Local JSON file recording live W&B bridge status/URL')
     pub.add_argument('--key-file', type=Path, default=DEFAULT_KEY_FILE,
@@ -882,8 +859,7 @@ def main():
     pub.add_argument('--once', action='store_true')
 
     rel = sub.add_parser('relay', help='Cloud/external side: stream live telemetry into online W&B')
-    rel.add_argument('--status-url', help='Direct HTTPS URL of training_service.py /status.json')
-    rel.add_argument('--repo', help='GitHub owner/repo for Issue fallback & status writeback')
+    rel.add_argument('--repo', help='GitHub owner/repo for live Issue telemetry & status writeback')
     rel.add_argument('--issue', type=int, help='GitHub telemetry issue number')
     rel.add_argument('--fallback-campaign', type=Path, help='Optional local snapshot folder (e.g. training-backup)')
     rel.add_argument('--project', default='')
