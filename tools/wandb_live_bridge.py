@@ -234,8 +234,8 @@ def request_sealed_wandb_key(repo: str, issue_number: int, timeout_s: float = 15
                     pass
 
 
-def campaign_run_id(config, prefix='rlbot'):
-    """Deterministic W&B run ID for a campaign so restarts/backfills resume one run cleanly."""
+def campaign_run_id(config, prefix='rlbot-v2'):
+    """Deterministic clean-schema W&B run ID; v2 excludes transport and Live-prefixed series."""
     ident = {
         'base': config.get('base'),
         'parent_steps': config.get('parent_steps'),
@@ -397,7 +397,7 @@ def build_wandb_events(snapshot: dict, last_step: int, logged_stages: set[int]) 
             if k == '_time' or v is None or isinstance(v, bool):
                 continue
             if isinstance(v, (int, float)):
-                out_key = ('Live/' + k) if k.startswith('Rating/') else k
+                out_key = ('Skill/' + k.removeprefix('Rating/')) if k.startswith('Rating/') else k
                 rec[out_key] = v
         # Across a stage evaluation/restart boundary, fold fixed-pool eval, promotion copy,
         # and trainer relaunch wall time into Overall Steps/Second so zero runtime is excluded.
@@ -570,6 +570,7 @@ def run_publisher(args):
                 'history_len': len((snap['state'].get('history') or [])),
                 'status': state_status,
                 'audit': bool(snap['state'].get('audit')),
+                'run_id': snap['run_id'],
             }, sort_keys=True).encode()).hexdigest()
             if digest != last_digest:
                 gh_api_json('PATCH', f'issues/{issue_number}', {'body': body}, repo=repo)

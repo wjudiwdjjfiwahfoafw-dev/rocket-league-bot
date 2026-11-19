@@ -37,7 +37,7 @@ def log_stage(run, campaign, entry, best_steps):
                 if lo < row['Total Timesteps'] <= hi:
                     training_rows.append(row)
     for row in sorted(training_rows, key=lambda r: r['Total Timesteps']):
-        run.log({('Live/' + k if k.startswith('Rating/') else k): v
+        run.log({('Skill/' + k.removeprefix('Rating/') if k.startswith('Rating/') else k): v
                  for k, v in row.items() if k != '_time' and v is not None})
     record = {f'Rating/{k}': v for k, v in entry['screen'].items()}
     record.update({f'Confirmation/{k}': v for k, v in (entry['confirm'] or {}).items()})
@@ -88,7 +88,7 @@ def stream(campaign, directory, interval=10):
                     step = int(row['Total Timesteps'])
                     if step > last:
                         events.setdefault(step, {}).update({
-                            ('Live/' + k if k.startswith('Rating/') else k): v
+                            ('Skill/' + k.removeprefix('Rating/') if k.startswith('Rating/') else k): v
                             for k, v in row.items() if k != '_time' and v is not None})
             for entry in state['history']:
                 if entry['stage'] in stages:

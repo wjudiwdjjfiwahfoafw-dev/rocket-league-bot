@@ -84,7 +84,8 @@ class RankingTests(unittest.TestCase):
             ranked.write(opponent / 'STATS.json', dict(skill_ratings=ref))
             args = argparse.Namespace(base=base, out=out, bot=bot, minutes=2, pilot_minutes=1,
                                       block_minutes=1, rounds=2, threads=1, minibatch=1008,
-                                      seed=1, wandb_offline=False, reward_metrics=True)
+                                      seed=1, wandb_offline=False, reward_metrics=True,
+                                      throughput_profile='cpu-20k')
             trainings, training_commands, matches = [], [], []
 
             def native(cmd, env, log, heartbeat=None):
@@ -125,6 +126,12 @@ class RankingTests(unittest.TestCase):
                 self.assertTrue(state['runtime_overrides']['reward_metrics'])
                 self.assertEqual(len(training_commands), 2)
                 self.assertTrue(all('--reward-metrics' in cmd for cmd in training_commands))
+                for cmd in training_commands:
+                    for flag, expected in (('--games', '64'), ('--epochs', '1'),
+                                           ('--collection-infer-threads', '1')):
+                        values = [cmd[i + 1] for i, token in enumerate(cmd[:-1]) if token == flag]
+                        self.assertEqual(values[-1], expected)
+                self.assertEqual(state['runtime_overrides']['throughput_profile'], 'cpu-20k')
                 self.assertTrue((out / 'best/120/POLICY_OPTIM.lt').is_file())
                 self.assertEqual(state['history'][-1]['steps'], 140)
                 self.assertEqual(set(state['audit']), {'100', '120', '140'})

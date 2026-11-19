@@ -87,6 +87,7 @@ class WandbLiveBridgeTest(unittest.TestCase):
             self._make_campaign(root, num_rows=6)
             snap = bridge.read_campaign_snapshot(root)
             self.assertEqual(len(snap['rows']), 6)
+            self.assertTrue(snap['run_id'].startswith('rlbot-v2-'))
             body, included = bridge.encode_snapshot_body(snap)
             self.assertEqual(included, 6)
             self.assertLess(len(body), 60_000)
@@ -100,8 +101,9 @@ class WandbLiveBridgeTest(unittest.TestCase):
             # Stage 0 at parent_steps + 6 training steps (stage 1 merges into step 6).
             self.assertEqual(len(events), 7)
             self.assertEqual([s for s, _ in events], sorted(s for s, _ in events))
-            # Native live tracker rating must be prefixed with Live/ while frozen eval uses Rating/
-            self.assertIn('Live/Rating/1v1', events[-1][1])
+            # Native skill-tracker ratings have their own clean namespace; no metric is Live/-prefixed.
+            self.assertIn('Skill/1v1', events[-1][1])
+            self.assertFalse(any(key.startswith('Live/') for _, event in events for key in event))
             self.assertAlmostEqual(events[-1][1]['Rating/Ranking'], 1646.7)
             self.assertAlmostEqual(events[-1][1]['Confirmation/Ranking'], 1663.3)
             self.assertAlmostEqual(events[-1][1]['Eval/Goal Share 1v1 %'], 70.0)

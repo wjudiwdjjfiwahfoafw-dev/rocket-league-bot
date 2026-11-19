@@ -261,13 +261,25 @@ def campaign(args):
     state = read(statefile)
     if config != state['config'] or pool_digest(out / 'pool') != state['pool_sha256']:
         raise ValueError('Campaign settings or frozen pool changed. Use the original settings or a fresh --out.')
-    # Runtime telemetry options may be enabled on an existing campaign without changing its
-    # frozen PPO recipe or evaluation protocol. Persist them so clean resumes keep the setting.
+    # Runtime instrumentation/performance options may be enabled on an existing campaign without
+    # changing its frozen reward recipe or evaluation protocol. Persist them across clean resumes.
+    runtime_changed = False
     if getattr(args, 'reward_metrics', False):
         state.setdefault('runtime_overrides', {})['reward_metrics'] = True
+        runtime_changed = True
+    if getattr(args, 'throughput_profile', None):
+        state.setdefault('runtime_overrides', {})['throughput_profile'] = args.throughput_profile
+        runtime_changed = True
+    if runtime_changed:
         write(statefile, state)
     runtime_overrides = state.get('runtime_overrides') or {}
-    runtime_train_args = ['--reward-metrics'] if runtime_overrides.get('reward_metrics') else []
+    runtime_train_args = []
+    if runtime_overrides.get('reward_metrics'):
+        runtime_train_args.append('--reward-metrics')
+    if runtime_overrides.get('throughput_profile') == 'cpu-20k':
+        # Benchmarked on the two-vCPU CPU runner: this is the fastest stable all-mode profile,
+        # with best clean measurements near 19.5k overall SPS. Shared-host variance still applies.
+        runtime_train_args.extend(['--games', '64', '--epochs', '1', '--collection-infer-threads', '1'])
     if out.resolve().is_relative_to(REPO.resolve()):
         state['working_directory'] = str(out.resolve().relative_to(REPO.resolve()))
     if getattr(args, 'target_ranking', None) is not None:
@@ -459,6 +471,8 @@ def main():
     parser.add_argument('--rewards', help='Native comma-separated reward weights for a fresh experiment')
     parser.add_argument('--reward-metrics', action='store_true',
                         help='Enable sampled reward-component telemetry for this campaign and persist the choice across resumes')
+    parser.add_argument('--throughput-profile', choices=('cpu-20k',),
+                        help='Use the benchmarked two-vCPU profile targeting about 20k overall steps/second')
     args = parser.parse_args()
     if args.backup_interval < 60:
         parser.error('--backup-interval must be at least 60 seconds')
