@@ -105,6 +105,11 @@ namespace GGL {
 			std::function<bool()> sessionAbortCheck = nullptr; // Returns true to stop a running session early
 
 			SkillRating curRatings = {};
+
+			// Per-tournament Elo update: the current policy may move by at most config.tournamentEloBudget per
+			//mode, whatever the number of goals, so each round of the tournament applies budget / rounds.
+			float curTournamentK = 0;
+			std::map<std::string, std::pair<int, int>> roundGoals = {}; // This round: current policy / opponent goals, per mode
 		} skill;
 
 		RenderSender* renderSender;
@@ -124,6 +129,14 @@ namespace GGL {
 		void SortVersions();
 
 		void PrepareAnchoredPool(uint32_t seed);
+
+		// Starts a tournament (a rating session or a --rate-rounds run) of the given number of rounds:
+		//the current policy keeps its Elo, and each round may move it by budget / rounds.
+		void BeginTournament(int rounds);
+
+		// Applies the round's aggregated result as one Elo update for the current policy. Saved versions never move.
+		void ApplyRoundElo(const SkillRating& opponent);
+
 		void RunSkillMatches(struct PPOLearner* ppo, Report& report, int fixture = -1);
 
 		// Several rounds of skill matches in a row, see SkillTrackerConfig::updateIntervalMinutes

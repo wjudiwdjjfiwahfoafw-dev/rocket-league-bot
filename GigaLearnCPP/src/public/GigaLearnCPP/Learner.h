@@ -3,6 +3,7 @@
 #include <RLGymCPP/EnvSet/EnvSet.h>
 #include "Util/MetricSender.h"
 #include "Util/RenderSender.h"
+#include "Util/Timer.h"
 #include "LearnerConfig.h"
 #include "PPO/TransferLearnConfig.h"
 
@@ -13,6 +14,11 @@ namespace GGL {
 	// https://github.com/AechPro/rlgym-ppo/blob/main/rlgym_ppo/learner.py
 	class RG_IMEXPORT Learner {
 	public:
+		// Continuous wall-clock anchor initialized on Learner construction so
+		// "Overall Steps/Second" includes 100% of setup, rollout, learning,
+		// skill-tracker rating, checkpoint saving, and reporting overhead.
+		std::chrono::steady_clock::time_point lastIterationWallEnd = std::chrono::steady_clock::now();
+
 		LearnerConfig config;
 
 		RLGC::EnvSet* envSet;

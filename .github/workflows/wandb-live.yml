@@ -1,0 +1,116 @@
+name: Live W&B Metrics Relay
+
+on:
+  push:
+    branches:
+      - 'arena/**'
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: 'Optional telemetry GitHub Issue number override'
+        required: false
+        default: ''
+      project:
+        description: 'Optional W&B project name (defaults to WANDB_PROJECT var or rocket-league-ggl)'
+        required: false
+        default: ''
+      entity:
+        description: 'Optional W&B entity/team (defaults to WANDB_ENTITY var or API key default)'
+        required: false
+        default: ''
+      poll_seconds:
+        description: 'Seconds between live metric polls'
+        required: false
+        default: '15'
+      max_minutes:
+        description: 'Maximum relay runtime in minutes (up to 350)'
+        required: false
+        default: '330'
+      require_api_key:
+        description: 'Require authenticated WANDB_API_KEY (via repo secret or ephemeral RSA-OAEP handshake)'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: wandb-live-${{ github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
+
+jobs:
+  relay:
+    name: Stream live metrics to Weights & Biases
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'Back up ranked checkpoint')
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: Locate active branch telemetry issue
+        id: discover
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          INPUT_ISSUE: ${{ inputs.issue }}
+        run: |
+          if [ -n "$INPUT_ISSUE" ]; then
+            echo "issue=$INPUT_ISSUE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ISSUE_NUM=$(python3 - <<'PY'
+          import json, os, subprocess
+          repo = os.environ["REPO"]
+          title = f"[telemetry] Live W&B metrics feed ({os.environ['BRANCH']})"
+          out = subprocess.check_output(["gh", "api", f"/repos/{repo}/issues?state=open&per_page=50"], text=True)
+          for item in json.loads(out):
+              if "pull_request" not in item and item.get("title") == title:
+                  print(item["number"])
+                  break
+          PY
+          )
+          echo "Active telemetry issue: ${ISSUE_NUM:-none (training paused — skipping relay)}"
+          echo "issue=${ISSUE_NUM}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout relay tool & backup fallback
+        if: steps.discover.outputs.issue != ''
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            tools
+            training-backup/state.json
+            training-backup/metrics
+            training-backup/eval
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python & install wandb
+        if: steps.discover.outputs.issue != ''
+        run: |
+          python3 -m pip install --upgrade --quiet pip "wandb>=0.18,<1.0"
+
+      - name: Stream live training metrics to W&B
+        if: steps.discover.outputs.issue != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          WANDB_PROJECT: ${{ inputs.project || vars.WANDB_PROJECT || 'rocket-league-ggl' }}
+          WANDB_ENTITY: ${{ inputs.entity || vars.WANDB_ENTITY || '' }}
+          ISSUE_NUM: ${{ steps.discover.outputs.issue }}
+          POLL_SECONDS: ${{ inputs.poll_seconds || '15' }}
+          MAX_MINUTES: ${{ inputs.max_minutes || '330' }}
+          REQUIRE_KEY: ${{ inputs.require_api_key || 'true' }}
+        run: |
+          ARGS=(
+            relay
+            --repo "${{ github.repository }}"
+            --issue "$ISSUE_NUM"
+            --fallback-campaign training-backup
+            --interval "$POLL_SECONDS"
+            --max-minutes "$MAX_MINUTES"
+          )
+          if [ "$REQUIRE_KEY" != "true" ]; then
+            ARGS+=(--allow-anonymous)
+          fi
+          python3 tools/wandb_live_bridge.py "${ARGS[@]}"

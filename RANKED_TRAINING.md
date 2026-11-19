@@ -1,104 +1,105 @@
-# Three-mode training and recovery
+# Ranked Multi-Mode Training, W&B Telemetry, and Recovery
 
-## Paused campaign
+## Resuming and pausing
 
-Training stopped gracefully at **3155997126**, partway through stage 5. The checkpoint includes policy, critic, shared head, slot encoder, Adam archives and running statistics. The authoritative copy is [`training-backup/`](training-backup/); `state.json` preserves the stage's elapsed budget. This snapshot is committed and pushed, not merely present on the sandbox disk.
-
-```bash
-./setup_linux.sh
-python3 tools/resume_training.py
-```
-
-On restricted Linux x86-64 / CPython 3.11 machines, `bash tools/setup_pypi_cpu.sh` is the no-root build fallback (GCC/make required, ~880 MiB wheel download cached outside the repository). It was tested with Python 3.11.2. Build dependencies and compilation intermediates are ignored by Git.
-
-`resume_training.py` verifies `manifest.json`, restores the snapshot into `results/ranking_3043214022/campaign/` only if no working campaign exists, and invokes the driver. Existing working progress is never overwritten. The snapshot itself is never used as a writable training directory. To restore without starting any process:
+`training-backup/` holds the single canonical paused snapshot (verified by `training-backup/manifest.json`) and is never trained in directly.
 
 ```bash
+# Restore into results/ without launching training:
 python3 tools/resume_training.py --restore-only
+
+# Verify and resume the finite training schedule (starts 30m GitHub auto-backup + live W&B publisher):
+python3 tools/resume_training.py
+
+# Resume one fixed 15-minute train/evaluate cycle and repeat it indefinitely with a rolling pool of 10 old policies:
+python3 tools/resume_training.py --continuous --evolving-opponents
+
+# Resume trainer only (no backup worker or W&B bridge):
+python3 tools/resume_training.py --without-services
 ```
 
-After restoring, the exact original campaign invocation also works:
+Send `SIGINT` (`Ctrl+C`) or `SIGTERM` once to pause cleanly: the native learner completes the current iteration, writes a full checkpoint, updates `state.json` to `paused`, and exits. In `--continuous` mode the original pilot/final-short-block schedule is ignored: one regular 15-minute training block is followed by evaluation, and the next identical cycle begins from the latest checkpoint. This repeats without a stage-count/time limit; the held-out audit is only part of a finite schedule.
+
+To start a fresh campaign (for example, a 12-hour run = `720` minutes) from the paused checkpoint against the same frozen reference pool:
 
 ```bash
-python3 tools/train_ranked.py --base checkpoints/3043214022 \
-  --out results/ranking_3043214022/campaign --minutes 180 --rounds 40 \
-  --monitor --github-backup
+python3 tools/train_ranked.py \
+  --base training-backup/learner/3250007238 \
+  --reference-pool training-backup/pool \
+  --out results/weights1700/campaign \
+  --minutes 720 --pilot-minutes 15 --block-minutes 30 --rounds 40 \
+  --target-ranking 1700 \
+  --github-backup --backup-interval 1800 --wandb-bridge
 ```
 
-Omit the monitoring/backup flags if intentionally running without them. The driver checks immutable settings and the frozen-pool hash, skips finished stages and uses the pending stage's remaining time. A lock prevents two drivers sharing a working campaign. SIGTERM/Ctrl+C once requests a native save and pause. Do not use SIGKILL if you can avoid it.
+## Fixed-pool evaluation protocol
 
-No training, viewer or background worker is left running after the cleanup pause.
+`Rating/Ranking = (1v1 Elo + 2v2 Elo + 3v3 Elo) / 3` using native sampled actions at softmax temperature `1.0` (`deterministic=False`, `policy_temperature=1.0`).
 
-## Selection protocol
+- **Frozen opponent pool:** 5 immutable left-mirrored policies in `training-backup/pool/` (SHA-256 `aa048b453da50d8c7c96913692d3e4d70bd141b5247cbd6519fe11589539d81c`).
+- **Fixtures:** Balanced across all opponents and both team colors, 36 arenas (12 per mode). The reported rating is the exact endpoint of the final rated round.
+- **Tournament Elo:** One Elo update per round per mode, from that round's share of its goals:
+  `delta = (C / rounds) * (goals_for / (goals_for + goals_against) - expected)`, `expected = 1 / (1 + 10^((opponent - current) / 400))`, `C = 100` (`--skill-tournament-elo-budget`). The sum over the rounds is at most `C` however many goals, arenas or players a tournament has, so there is no cap on top of the rating — only a fixed budget per tournament.
+  Because the update is `C * 0.00144 * (true - current)`, `C` sets how fast the rating follows real improvement: `100` closes about 14 % of the gap per tournament (1/e in ~7 tournaments, 90 % of a 50-point gap in ~16) while a 40-round screen still estimates the change to only about +-2 points.
+- **Promotion gate:** Screen on seed `1009` (`40` rounds); if above current best screen, confirm on seed `2003` (`80` rounds). Promotes only when both matching-seed scores improve and their mean gain is at least `+8.0` Elo.
+- **Held-out audit:** Evaluated once at campaign completion (`80` rounds on the predeclared `--audit-seed`, never used for selection).
+- **Cache integrity:** Cached `eval/*.json` entries fingerprint `POLICY.lt`, `SHARED_HEAD.lt`, and `SHARED_HEAD_SLOTS.lt` by SHA-256 and validate pool digest and temperature-1 sampled execution.
+- **Current Elo only:** A saved result stores the endpoint Elo of each mode (`1v1`, `2v2`, `3v3`, `Ranking`), plus the Elo the tournament started from and the one written back into the policy so a cached result stays verifiable. The per-round rating series and averaged Elo are discarded, so checkpoint JSON stays a compact record of the current rating instead of a rating history.
+- **Continuous rating:** The evaluated policy keeps the Elo it already carries — it never starts from the pool's mean or any other shared anchor. The tournament's endpoint is written back into that policy's own `RUNNING_STATS.json` (`skill_ratings`), so the next tournament starts where this one ended, and an accepted pool copy carries exactly the Elo it had when it was accepted. Opponents are only ever read.
 
-**Rating/Ranking = (1v1 Elo + 2v2 Elo + 3v3 Elo) / 3.** These are goal-based simulator ratings against a specific pool, not human competitive ranks.
+## Evolving old-policy pool
 
-- Five frozen opponent versions, immutable original per-mode ratings; pool SHA256 `aa048b453da50d8c7c96913692d3e4d70bd141b5247cbd6519fe11589539d81c`.
-- Each candidate starts at the reference pool's mean per mode. Only candidate Elo changes, K=5 per goal.
-- Native sampled actions, seeded per-arena kickoff streams, scheduled opponents on both colors, 36 arenas (12 per mode). Scores average the final three quarters of rounds.
-- Screen: seed **1009**, **40 rounds**. Potential improvements get confirmation: seed **2003**, **80 rounds**.
-- Promote only if both matching-seed rankings improve and mean gain is at least **8 Elo**.
-- End-of-campaign audit: seed **4001**, **80 rounds** for parent, best and latest. Audit does not select the PPO best.
-- The 1600 target requires screen, confirmation **and** held-out audit >=1600. The separately calibrated policy passed; see [TARGET_1600.md](TARGET_1600.md).
+`--evolving-opponents` migrates/resumes a campaign with a single shared set of 10 historical policies for both `--train-vs-old`/skill matches and anchored evaluation. The initial set is sampled evenly across all available prior policy-version timestamps so it spans the historical range. Native automatic policy saving is effectively disabled; only the campaign's promotion gate changes the set.
 
-The selected PPO best and latest weights differ. Continue training from `learner/`, not `best/`. The planned trainer budget is `[6,30,30,30,30,30,24]` minutes; evaluation adds wall time. A stronger latest timestep is never assumed without evaluation.
+After each training block, the candidate is rated against all ten opponents on the screen and confirmation seeds. It is added only if its raw endpoint `Ranking` is at least 50 Elo above the strongest opponent on both evaluations. On promotion it enters the set and the oldest timestamp is evicted. The incumbent is re-rated whenever the pool changes so comparisons stay on the same pool-specific scale. Pool membership, digest, generation, and strongest-opponent margin are recorded in campaign history. The threshold and pool size are configurable with `--promotion-margin` and `--opponent-pool-size`.
 
-## Snapshot contents
+### Immutable old policies
 
-| Path inside `training-backup/` | Purpose |
-|---|---|
-| `learner/3155997126/` | Latest full, resumable checkpoint |
-| `learner/policy_versions/` | Mutable training opponent versions and their rolling ratings |
-| `best/3137998278/` | Selected full PPO model, preserved independently |
-| `pool/` | Immutable evaluation opponents and ratings |
-| `state.json` | Config, history, selected model, paused stage and elapsed time |
-| `metrics/*.jsonl` | Numeric metrics every 20 iterations and on live rating sessions |
-| `eval/*.json` | Completed fixed-pool measurements |
-| `manifest.json` | SHA256 of every snapshot file |
+Every policy version accepted into the pool is an immutable snapshot: its weights and a small `STATS.json` holding only the Elo it had at acceptance (`skill_ratings`) plus the mirror flag are written exactly once, when the copy is created. This does not apply to the active learner — its weights keep training, and its own Elo is continuous: native sessions move it, and every anchored evaluation tournament writes its endpoint back into the learner's `RUNNING_STATS.json`. Only the accepted copy is frozen. Nothing rewrites an accepted copy afterwards — no Elo updates from later skill matches, no metadata refreshes — so old policy folders stay byte-identical and backup commits stop churning.
 
-The base `checkpoints/3043214022/` must remain available because it is part of the campaign configuration and final audit. `checkpoints/3035220582/` preserves the source of the verified calibrated policy. Do not edit either source in place. The standalone preset writes to its `--checkpoints` directory; use a copy for experiments.
+`train_ranked.py` pins a SHA-256 manifest of every version (`frozen_versions` in `state.json`), re-checks it at each cycle boundary, and compares the trainer's `learner/policy_versions/` copy against the pool after every training block. Any re-rated or re-annotated old version aborts the cycle instead of being silently accepted, and the GitHub backup worker refuses to publish a snapshot that no longer matches the pinned manifest. Identical copies are never recopied, and FIFO eviction only removes whole versions.
 
-## Monitoring and off-machine backups
+In this mode, GitHub `training-backup/` stores only the latest full model checkpoint, the exact old-policy set under `learner/policy_versions/`, and the small state/manifest metadata needed to verify and resume; it does not duplicate the pool, best model, evaluation cache, or training metric logs. Local campaign history/metrics remain in `results/...`.
 
-`--monitor --github-backup` starts a sandbox-local service with the trainer. Open the platform's **Live training metrics** preview, not a saved sandbox URL. The viewer refreshes every 10 seconds and plots every numeric field actually recorded in the JSONL, plus fixed-pool scores and separate calibration results. It cannot reconstruct diagnostics that were not recorded. It is not the W&B website.
+The reported Elo values use the exact final rating endpoint from a match/session, not a cross-round smoothed or interpolated series. W&B logs each rating event as a discrete sample (`Elo/...` for the native tracker and `Rating/...` for the anchored candidate evaluation); other sparse scalar diagnostics may still be window-averaged.
 
-The worker checks every minute for complete, settled checkpoint files. New snapshots are committed under `training-backup/` and pushed **only to the current branch**. It verifies the remote branch hash before reporting success. A failed push is retried. Latest, selected best, pools, state, evaluations and metrics are copied; credentials and W&B diagnostics are not.
-
-The repository is public, so snapshots and metrics are public. An abrupt shutdown can lose work since the last successful remote backup. Git history retains older snapshots; this is suitable for these small CPU models, not unlimited large checkpoints. No force push/history rewrite is performed. A crash snapshot resets pending elapsed time conservatively; a graceful pause preserves the saved boundary's elapsed time. The viewer stops when the sandbox/service stops; pushed checkpoints survive.
-
-To inspect paused scores without starting a process:
+Inspect saved ratings anytime with:
 
 ```bash
 python3 tools/show_rating.py training-backup
 ```
 
-## Training recipe and follow-up experiments
+Verify that the ten old policies are still byte-identical to their creation record (exit code `1` on any rewrite):
 
-The current engine uses equal-player mode balance: 88 arenas split 48/24/16, each mode supplying 96 player decisions per step. Fixed rollouts bootstrap unfinished trajectories at each PPO update without resetting games or leaking trajectories across policy switches. GAE uses the matching bootstrap in reverse traversal order.
+```bash
+python3 tools/verify_frozen_versions.py results/weights1700-v3/campaign
+```
 
-PPO receives 48,384 learner steps per iteration, four batches of 12,096, minibatches of 1,008, one epoch, LR `1e-4`, entropy `0.009`, half random starts and 15% saved opponents. Joint actor/critic inference shares head features; lean metrics reduce CPU overhead. The short benchmark measured ~18% more learner rows/s than the previous whole setup, **not** a guarantee of better Elo.
+## Throughput accounting (`Overall Steps/Second`)
 
-New experiments can explicitly override `--lr`, `--entropy-scale`, `--random-state-prob`, `--train-vs-old` and `--rewards`. Use a new `--out`: overrides are recorded in immutable configuration and cannot change a resumed run silently.
+`Overall Steps/Second` uses contiguous monotonic wall-clock intervals with zero excluded CPU or wall time:
 
-For policy calibration, build `cmake --build build --target CalibratePolicy -j 1`. The utility scales a **copied** policy's output weight and bias. It does not change fixture rules or opponent ratings. `tools/test_calibration_candidates.py` preserves provenance and separate score caches; it stops after a qualifying held-out audit. The saved target policy is already calibrated: no additional runtime temperature setting is needed. Its optimizer archives were copied, not adapted to transformed weights, so fine-tuning it requires a fresh experiment and reevaluation.
+- Inside `GigaLearnCPP` (`Learner.cpp` and `python_scripts/metric_receiver.py`), each emitted window spans from process start (first report) or the exact end of the previous emitted report through opponent switching, rollout collection, inference, trajectory packing, GAE, per-mode advantage normalization, PPO updates, skill-tracker rating matches, policy-version writes, checkpoint saves, and metric serialization/flushing (`Iteration Time` and `Overhead Time` are logged alongside `Collection Time` and `Consumption Time`).
+- Across ranked campaign stages (`train_ranked.py` and `wandb_live_bridge.py`), stage `steps_per_second` and stage-boundary `Overall Steps/Second` also fold in subprocess startup/teardown, fixed-pool screen/confirmation evaluations, and checkpoint promotion copies.
 
-## Optional W&B
+## Automatic 30-minute GitHub backups
 
-W&B is not needed to build, train, resume, monitor or back up. `--wandb-offline` requires the W&B SDK in the driver's Python and records a local offline segment; it is not live website reporting. `--wandb-online` tails metrics in a separate sandbox process with a stable resumable run ID. SDK credentials and permitted W&B outbound traffic are required. Both were unavailable during this session, and no online upload was verified. No external-PC relay remains.
+`--github-backup` runs `tools/training_service.py` as a headless background worker (no HTTP server or web UI). Every `--backup-interval` seconds (default `1800` = 30 minutes, respected across restarts via `manifest.json`), it stages the latest checkpoint and minimal campaign state. In evolving-pool mode it includes exactly the current `learner/policy_versions/` set (10 by default), excludes duplicate pool/best/eval/metrics copies, hashes the snapshot, and pushes a verified commit to the current branch. The legacy fixed-pool backup format is retained for campaigns that have not enabled evolving opponents.
+
+## Weights & Biases reporting
+
+- **Sandboxed / restricted network (`--wandb-bridge`):** `tools/wandb_live_bridge.py publish` writes compact compressed metric frames to a branch telemetry issue; `.github/workflows/wandb-live.yml` streams them live to online W&B (`step_metric='Total Timesteps'`), authenticating via repository secret `WANDB_API_KEY` or an ephemeral RSA-3072-OAEP-SHA256 handshake against `/dev/shm/.wandb_bridge_key` (never stored in Git or logs).
+- **Direct network (`--wandb-online` / `--wandb-offline`):** `tools/ranked_wandb.py` streams directly to online W&B or exports an offline run when direct outbound W&B access is available.
+- Reward-component diagnostics are sampled during training and appear under `Rewards/…`; use `python3 tools/resume_training.py --reward-metrics` to enable them on a resumed campaign without changing its frozen PPO/evaluation recipe. Lean-metrics campaigns can independently retain sampled per-player telemetry under `Player/…` with `python3 tools/resume_training.py --player-metrics`. Sparse JSONL/W&B output windows average ordinary numeric diagnostics across skipped iterations (while keeping cumulative counters and the timestep axis at their latest values); rating events are immediate and are never window-averaged. On this two-vCPU runner, `python3 tools/resume_training.py --throughput-profile cpu-20k` selects the fastest measured all-mode profile (64 games, one PPO epoch, one collection-inference thread); clean benchmarks peak near 19.5k overall SPS, though shared-host variability can lower that. The live run stores its delivery cursor in GitHub issue metadata, uses `Elo/…` for raw internal skill-tracker endpoints, and publishes neither `Live/…` nor `Stream/…` transport fields.
 
 ## Regression tests
 
 ```bash
-python3 -m unittest discover -s tools -p 'test_*.py'
-python3 tools/test_native_rollout.py  # short real-model test, after building
+python3 -m unittest discover -s tools -p 'test_*.py' -v
+
+# After building build/GigaLearnBot:
+build/GigaLearnTests
+build/GigaLearnMultiModeTests
+python3 tools/test_native_rollout.py
+python3 tools/test_native_render.py
 ```
-
-Native `GigaLearnTests` and `GigaLearnMultiModeTests` cover GAE math, observations and joint inference. The Python tests exercise selection, budget/recovery, streaming, target verification and snapshot restoration.
-
-## Render and exploration semantics
-
-`--render` overrides arena count to one and action selection to masked argmax. The initial episode and every episode after a goal/no-touch termination sample uniformly from the selected `--modes`; consecutive repeats are allowed. Player observations, masks, rewards and state buffers are rebuilt when the single arena changes team size. Viewing does not train, create policy-version arenas, or save checkpoints.
-
-The learned policy is the uncalibrated model weights. Rendering's deterministic flag is not used in training. PPO sampling stays stochastic at temperature 1; the resume helper loads only the native PPO snapshot. The historical 1600+ calibrated sampled benchmark is not evidence that the learned policy improved and is unchanged under deterministic argmax. Keep any lower-temperature opponents separate from learner state and do not use their modified archives to warm-start the learner.
-
-Headless render regression: `python3 tools/test_native_render.py` captures real RocketSimVis UDP frames and checks all modes, a subset, one selected mode, and absence of training/saves. Native tests cover masked argmax, unchanged stochastic sampling and single-arena buffer resizing.

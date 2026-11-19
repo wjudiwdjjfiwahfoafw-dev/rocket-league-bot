@@ -78,8 +78,12 @@ def show_rated(paths, mode):
         name = os.path.basename(path)[:-len(".json")]
         results.append((name, j, j["ratings"][mode]))
 
-    print(f"{'checkpoint':<28} {'timesteps':>11} {'rating':>7} {'+-':>4} {'goals':>11} {'share':>6} {'rounds':>6} {'start':>7} {'end':>7}")
-    for name, j, r in sorted(results, key=lambda x: -x[2]["average"]):
+    def endpoint(rating):
+        """Saved results keep only the current endpoint Elo, never the rating series or averages."""
+        return float(rating["end"] if isinstance(rating, dict) else rating)
+
+    print(f"{'checkpoint':<28} {'timesteps':>11} {'elo':>7} {'+-':>4} {'goals':>11} {'share':>6} {'rounds':>6}")
+    for name, j, r in sorted(results, key=lambda x: -endpoint(x[2])):
         per_mode = j.get("mode_goals", {}).get(mode)
         goals_for, goals_against = (per_mode["for"], per_mode["against"]) if per_mode else (j["goals_for"], j["goals_against"])
         goals = max(goals_for + goals_against, 1)
@@ -89,12 +93,10 @@ def show_rated(paths, mode):
         # Measured with repeated sessions of about 1,350 goals: about 15 points. It shrinks with the square root of the goals.
         # This heuristic has not been calibrated for fixed opponent ratings.
         error = "-" if j.get("anchored") else f"{550 / math.sqrt(goals):.0f}"
-        # Some aggregate scores (including older Rating/Average) only have an average.
-        start, end = (f"{r[k]:.1f}" if k in r else "-" for k in ("start", "end"))
 
-        print(f"{name:<28} {j['checkpoint_timesteps']:>11,} {r['average']:>7.1f} {error:>4} "
-              f"{goals_for:>5.0f}:{goals_against:<5.0f} {100 * share:>5.1f}% {j['rounds']:>6} {start:>7} {end:>7}")
-    print("\nrating: average of \"Rating/" + mode + "\" over the last three quarters of the rounds.\n"
+        print(f"{name:<28} {j['checkpoint_timesteps']:>11,} {endpoint(r):>7.1f} {error:>4} "
+              f"{goals_for:>5.0f}:{goals_against:<5.0f} {100 * share:>5.1f}% {j['rounds']:>6}")
+    print("\nelo: current (endpoint) \"Rating/" + mode + "\" after the final rated round.\n"
           "+-: legacy tracker heuristic (not calibrated for anchored matches).\n"
           "share: fraction of goals scored by the checkpoint, per mode if available, otherwise across modes.")
 

@@ -1,41 +1,43 @@
-# Rocket League PPO training
+# Rocket League Multi-Mode PPO Bot
 
-CPU training for one small (`s`) policy across **1v1, 2v2 and 3v3**, using the bundled GigaLearnCPP / RLGymCPP / RocketSim stack. Upstream source and license notices remain in the dependency directories. The original upstream README and historical experiments remain available in Git history.
+Native C++ PPO training and RLBot integration for a single shared policy (`s`, left-mirrored `MultiModeObs`, 90-action `DefaultAction`) across **1v1, 2v2, and 3v3**, built on the bundled GigaLearnCPP / RLGymCPP / RocketSim stack.
 
-## Current state: paused
+## Current status — paused
 
-- **Latest resumable checkpoint:** `3155997126`, saved during stage 5.
-- **Selected PPO model:** `3137998278`, screen / confirmation Ranking **1570.05 / 1576.24**.
-- **Calibrated sampled-action benchmark (not a learned-model improvement):** original at temperature 0.4, **1608.18 screen / 1662.50 confirmation / 1659.84 held-out audit**. See [model and evidence](TARGET_1600.md). Calibration is distinct from PPO training progress.
-- **Canonical paused campaign:** [`training-backup/`](training-backup/), including optimizer state, opponent pools, evaluations, metrics and SHA256 manifest. This snapshot is committed and pushed to GitHub.
+Training is cleanly paused with no running background processes.
 
-## Build and explicitly resume
+- **Canonical snapshot:** [`training-backup/`](training-backup/) (`status: paused`, SHA-256 verified via `training-backup/manifest.json`).
+- **Latest resumable learner checkpoint:** `training-backup/learner/3250007238/` (full policy, critic, shared head, slot encoder, Adam optimizer states, and running stats; mode-aware v3 zero-sum reward recipe).
+- **Selected best checkpoint in snapshot:** `training-backup/best/3244539846/` (native sampled actions at temperature `1.0` — Screen `1594.89`, Confirmation `1608.13` against the immutable 5-bot reference pool `aa048b45...`).
+- **Target:** `1700.0` combined Elo (`(1v1 + 2v2 + 3v3) / 3`) on fixed-pool screen, confirmation, and held-out audit.
+- **Metrics & backups:** Live metrics stream directly to Weights & Biases (`tools/wandb_live_bridge.py` + `.github/workflows/wandb-live.yml`; no local web dashboard). Automatic GitHub backups run headlessly every 30 minutes (`1800s`) via `tools/training_service.py`. `Overall Steps/Second` is measured over contiguous wall-clock windows so zero training, saving, evaluation, or reporting overhead is excluded.
+
+## Build and resume
 
 ```bash
 ./setup_linux.sh
-# Restricted Linux CPU alternative: bash tools/setup_pypi_cpu.sh
+# Restricted Linux x86-64 / Python 3.11 CPU fallback:
+# bash tools/setup_pypi_cpu.sh
+
+# Inspect paused ratings without starting training:
+python3 tools/show_rating.py training-backup
+
+# Restore working copy only (no training started):
+python3 tools/resume_training.py --restore-only
+
+# Explicitly resume paused training (with 30m GitHub backup + W&B bridge):
 python3 tools/resume_training.py
 ```
 
-The resume command validates the backup hashes, restores a separate writable campaign, and starts the trainer, browser metrics viewer and GitHub backup worker. **Nothing starts automatically on checkout.** To restore without training:
+See [RANKED_TRAINING.md](RANKED_TRAINING.md) for the evaluation protocol, CLI options, W&B streaming, and recovery details.
 
-```bash
-python3 tools/resume_training.py --restore-only
-```
+## Repository layout
 
-See [training and recovery guide](RANKED_TRAINING.md) for requirements, direct commands, evaluation rules and limitations.
-
-## Kept intentionally
-
-- `src/`, `GigaLearnCPP/`, `RLBotCPP/`: trainer and its build dependencies; do not remove vendored dependencies needed by CMake.
-- `checkpoints/3043214022/`: original base required by the paused campaign configuration.
-- `checkpoints/3035220582/`: unmodified source of the calibrated policy, for reproducibility.
-- `checkpoints/policy_versions/`: standalone preset's mutable opponent pool; distinct from the immutable evaluation pool.
-- `training-backup/`: latest recoverable PPO state and selected best, not a scratch directory.
-- `results/target1600-calibration/temperature-0.4/`: verified policy and all three evaluations.
-- `tools/`: current training, evaluation, monitoring, recovery, setup and regression tests.
-
-Older checkpoints, superseded 1v1/two-mode scripts, reports, trial outputs and benchmark builds were removed from the current tree. They remain in Git history; no history was rewritten.
+- `src/` — Bot entrypoint (`ExampleMain.cpp`), mode-aware zero-sum rewards, tactical state setter, and RLBot client.
+- `GigaLearnCPP/`, `RLBotCPP/`, `rlbot/` — Bundled PPO/RLGymCPP/RocketSim framework and RLBot runner.
+- `training-backup/` — Canonical paused campaign (`learner/`, `best/`, immutable `pool/`, `eval/`, `metrics/`, `state.json`, `manifest.json`).
+- `tools/` — Campaign driver (`train_ranked.py`), recovery (`resume_training.py`), headless 30-minute GitHub backup worker (`training_service.py`), W&B streaming (`wandb_live_bridge.py`, `ranked_wandb.py`), rating viewer (`show_rating.py`), throughput profiler (`benchmark.py`), CPU wheel bootstrap (`setup_pypi_cpu.sh`), and regression tests (`test_*.py`).
+- `.github/workflows/wandb-live.yml` — Cloud relay workflow for streaming live metrics to W&B from network-restricted environments.
 
 ## Deterministic viewing
 
@@ -43,6 +45,4 @@ Older checkpoints, superseded 1v1/two-mode scripts, reports, trial outputs and b
 build/GigaLearnBot --render --checkpoints training-backup/best --device cpu --modes 1v1,2v2,3v3
 ```
 
-`--render` uses exactly one arena even if `--games` is supplied. At each goal/no-touch episode reset it independently samples a mode uniformly from `--modes` (repeats are possible). Actions are masked argmax, never sampled. RocketSimVis receives UDP frames; viewing does not train or save.
-
-**Training remains stochastic at temperature 1.** Resume uses the uncalibrated PPO weights in `training-backup/learner/`, not the temperature-scaled artifact. Calibrated policies may be used as separately identified opponents; their sampled-action Elo is not a new learned-model rating. Positive temperature scaling does not change deterministic argmax actions.
+Streams RocketSimVis UDP frames in a single arena using masked argmax actions without training or saving.
