@@ -471,6 +471,8 @@ def campaign(args):
         # exact opponent set before comparing or promoting another checkpoint.
         if runtime_overrides.get('evolving_opponents', False) and (
                 not state.get('best') or state['best'].get('opponent_pool_sha256') != state['pool_sha256']):
+            state['status'] = 'evaluating'
+            write(statefile, state)
             incumbent_steps = (state.get('best') or {}).get('steps')
             incumbent = out / 'best' / str(incumbent_steps) if incumbent_steps is not None else None
             if incumbent is None or not incumbent.is_dir():
