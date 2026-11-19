@@ -234,8 +234,8 @@ def request_sealed_wandb_key(repo: str, issue_number: int, timeout_s: float = 15
                     pass
 
 
-def campaign_run_id(config, prefix='rlbot-v2'):
-    """Deterministic clean-schema W&B run ID; v2 excludes transport and Live-prefixed series."""
+def campaign_run_id(config, prefix='rlbot-v3'):
+    """Deterministic clean-schema W&B run ID; v3 excludes transport and Live-prefixed series."""
     ident = {
         'base': config.get('base'),
         'parent_steps': config.get('parent_steps'),
@@ -354,6 +354,8 @@ def encode_relay_meta(meta: dict) -> str:
     lines.append(f"- **Run ID**: `{meta.get('run_id', '')}` | **Auth**: `{meta.get('auth_mode', '')}`")
     lines.append(f"- **Last synced step**: `{meta.get('last_step', -1):,}` | **Stages synced**: `{meta.get('stages', [])}`")
     lines.append(f"- **Source**: `{meta.get('source', '')}` | **Updated**: `{meta.get('updated_iso', '')}`")
+    if meta.get('phase'):
+        lines.append(f"- **Relay phase**: `{meta['phase']}`")
     if meta.get('error'):
         lines.append(f"- **Relay note**: `{meta['error']}`")
     lines.append(f"\n<!-- WANDB_RELAY_META_START -->\n{clean}\n<!-- WANDB_RELAY_META_END -->\n")
@@ -798,6 +800,14 @@ def run_relay(args):
     _, relay_meta = find_relay_meta_on_issue(repo, args.issue) if repo and args.issue else (None, None)
     last_step, logged_stages = load_relay_cursor(run.summary, relay_meta, expected_run_id=run_id)
     last_comment_push = 0.0
+    if repo and args.issue:
+        comment_id = post_relay_meta_comment(repo, args.issue, None, {
+            'run_url': run_url, 'run_id': run_id, 'project': project, 'auth_mode': auth_mode,
+            'last_step': last_step, 'stages': sorted(logged_stages), 'source': source,
+            'phase': 'initialized',
+            'updated_iso': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime()),
+        })
+        last_comment_push = time.monotonic()
     idle_since = None
 
     try:
@@ -837,6 +847,7 @@ def run_relay(args):
                         'stages': sorted(logged_stages),
                         'source': source,
                         'campaign_status': summary.get('Campaign/Status'),
+                        'phase': 'streaming',
                         'updated_iso': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime()),
                     }
                     comment_id = post_relay_meta_comment(repo, args.issue, comment_id, meta)
@@ -858,6 +869,21 @@ def run_relay(args):
                 break
             time.sleep(args.interval)
             snap, source = load_best_remote_snapshot(args, repo, gh_token)
+    except Exception as exc:
+        error = type(exc).__name__ + ': ' + str(exc)[:240]
+        secret = os.environ.get('WANDB_API_KEY', '')
+        if secret:
+            error = error.replace(secret, '[REDACTED]')
+        if repo and args.issue:
+            post_relay_meta_comment(repo, args.issue, comment_id, {
+                'run_url': run_url, 'run_id': run_id, 'project': project,
+                'auth_mode': auth_mode, 'last_step': last_step,
+                'stages': sorted(logged_stages), 'source': source,
+                'campaign_status': (snap or {}).get('state', {}).get('status'),
+                'phase': 'error', 'error': error,
+                'updated_iso': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime()),
+            })
+        raise
     finally:
         run.finish()
         print(f'Closed/flushed W&B stream cleanly: {run_url}', flush=True)

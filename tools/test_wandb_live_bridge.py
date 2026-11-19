@@ -87,7 +87,7 @@ class WandbLiveBridgeTest(unittest.TestCase):
             self._make_campaign(root, num_rows=6)
             snap = bridge.read_campaign_snapshot(root)
             self.assertEqual(len(snap['rows']), 6)
-            self.assertTrue(snap['run_id'].startswith('rlbot-v2-'))
+            self.assertTrue(snap['run_id'].startswith('rlbot-v3-'))
             body, included = bridge.encode_snapshot_body(snap)
             self.assertEqual(included, 6)
             self.assertLess(len(body), 60_000)
