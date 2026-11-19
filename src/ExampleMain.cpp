@@ -1223,7 +1223,7 @@ static const OptionDef OPTION_DEFS[] = {
 	{ "skill-arenas", "16", "Skill tracker: rating games played at once" },
 	{ "skill-sim-time", "45", "Skill tracker: seconds of game time per round of rating games" },
 	{ "skill-max-sim-time", "240", "Skill tracker: seconds of game time after which the opponent version is changed, even without enough goals" },
-	{ "skill-tournament-elo-budget", "25", "Skill tracker: maximum rating change of the current policy per tournament (a session or a --rate-rounds run), per game mode. Each round may move the rating by budget / rounds, however many goals are scored" },
+	{ "skill-tournament-elo-budget", "100", "Skill tracker: maximum rating change of the current policy per tournament (a session or a --rate-rounds run), per game mode. Each round may move the rating by budget / rounds, however many goals are scored" },
 	{ "skill-initial-rating", "0", "Skill tracker: rating of the first version" },
 	{ "skill-deterministic", NULL, "Skill tracker: both sides pick their most likely action (like the bot does in the real game) instead of sampling" },
 	{ "ts-per-version", "25m", "Timesteps between saved policy versions (kept in <checkpoints>/policy_versions). They are the opponents of the skill tracker and of --train-vs-old. With --skill-minutes: a version is saved after the first rating session that comes this many timesteps after the newest version" },

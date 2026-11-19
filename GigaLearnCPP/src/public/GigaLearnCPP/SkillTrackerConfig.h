@@ -38,7 +38,9 @@ namespace GGL {
 		//a --rate-rounds run, or one round of the older update-interval mode. The per-round increment is
 		//budget / rounds, so the maximum does not depend on how many goals, games, arenas or players the
 		//tournament has. Only the current policy's rating moves; saved versions never change.
-		float tournamentEloBudget = 25;
+		// The tournament estimate itself is low-noise (about +-2 points at this budget), so this is the rate at
+		//which the rating follows real improvement: it closes ~14% of the gap to the true rating per tournament.
+		float tournamentEloBudget = 100;
 
 		// Initial rating of the first version
 		float initialRating = 0; 
