@@ -86,26 +86,25 @@ void GGL::PolicyVersionManager::SaveVersions() {
 	for (auto& version : versions) {
 		auto versionSaveFolder = saveFolder / std::to_string(version.timesteps);
 
-		// The models of a version never change, so they are only written once
+		// A saved version is an immutable record of a trained policy: its weights and its STATS.json
+		// (the current Elo at creation, with no rating history) are written exactly once, right here.
+		// Later saves must never rewrite them, so the folder stays byte-identical for training,
+		// evaluation, backups and external inspection. Ratings that move during skill matches stay
+		// in memory for the running process and are intentionally not written back to old versions.
 		if (!allSavedTimesteps.contains(version.timesteps)) {
 			std::filesystem::create_directories(versionSaveFolder);
 			version.models.Save(versionSaveFolder, false);
-		}
 
-		// The rating of a version does change (every skill match moves it), so it is written on every save.
-		// Otherwise a resumed run would get the old versions back at the rating they had when they were first saved,
-		//	while the current policy keeps the rating it has earned against them since.
-		{ // Save JSON
 			auto jsonPath = versionSaveFolder / "STATS.json";
-
 			std::ofstream fOut(jsonPath);
 			RG_ASSERT(fOut.good());
 
 			json j = {};
 			j["skill_ratings"] = version.ratings.ToJSON();
 			j["mirror_x"] = version.mirrorX;
-			std::string jStr = j.dump(4);
-			fOut << jStr;
+			fOut << j.dump(4);
+
+			allSavedTimesteps.insert(version.timesteps);
 		}
 	}
 }
@@ -432,26 +431,23 @@ void GGL::PolicyVersionManager::RunSkillSession(PPOLearner* ppo, Report& report)
 	skill.curGoals = 0;
 
 	if (roundsPlayed == numRounds) {
-		double modeAvgSum = 0;
+		double modeEndSum = 0;
 		for (auto& pair : ratingSeries) {
 			auto& series = pair.second;
-			size_t first = series.size() / 4;
-			double sum = 0;
-			for (size_t i = first; i < series.size(); i++)
-				sum += series[i];
-			float average = (float)(sum / (series.size() - first));
-			modeAvgSum += average;
+			const float endpoint = series.back();
+			modeEndSum += endpoint;
 
-			RG_LOG(" > Rating session result: " << pair.first << " = " << average << " (after the last round: " << series.back() << ")");
-			report["Rating/" + pair.first] = average;
-			report["Skill Matches/Rating After Last Round " + pair.first] = series.back();
-			skill.curRatings.data[pair.first] = average;
+			RG_LOG(" > Rating session endpoint: " << pair.first << " = " << endpoint);
+			// Publish the last Elo state as-is. Do not smooth/interpolate across rounds.
+			report["Rating/" + pair.first] = endpoint;
+			report["Skill Matches/Rating After Last Round " + pair.first] = endpoint;
+			skill.curRatings.data[pair.first] = endpoint;
 		}
 		if (!ratingSeries.empty()) {
-			float overallAvg = (float)(modeAvgSum / ratingSeries.size());
-			RG_LOG(" > Rating session result: Average = " << overallAvg);
-			// The one number to optimize: the mean over all trained modes (1v1, 2v2, and 3v3 once it is trained)
-			report["Rating/Ranking"] = overallAvg;
+			float ranking = (float)(modeEndSum / ratingSeries.size());
+			RG_LOG(" > Rating session endpoint Ranking (mean of mode endpoints) = " << ranking);
+			// Ranking is the cross-mode composite; each mode's reported Elo above remains unmodified.
+			report["Rating/Ranking"] = ranking;
 		}
 
 		report["Skill Matches/Rounds"] = roundsPlayed;

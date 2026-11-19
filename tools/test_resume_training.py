@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import resume_training
+import train_ranked
 from resume_training import restore, verify
 
 
@@ -27,6 +28,31 @@ class RestoreTests(unittest.TestCase):
             (work / 'state.json').write_text('{"status":"newer"}')
             self.assertEqual(restore(snapshot, work)['status'], 'newer')
             self.assertEqual(json.loads((snapshot / 'state.json').read_text())['status'], 'paused')
+
+    def test_compact_evolving_backup_rebuilds_local_only_campaign_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot, work = root / 'snapshot', root / 'work'
+            (snapshot / 'learner/9000').mkdir(parents=True)
+            versions = snapshot / 'learner/policy_versions'
+            versions.mkdir()
+            for step in range(10):
+                version = versions / str(step)
+                version.mkdir()
+                for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
+                    (version / name).write_bytes(f'{step}:{name}'.encode())
+                (version / 'STATS.json').write_text(json.dumps({'skill_ratings': {
+                    '1v1': 1500 + step, '2v2': 1500 + step, '3v3': 1500 + step}}))
+            state = {'status': 'paused', 'runtime_overrides': {
+                'evolving_opponents': True, 'opponent_pool_size': 10}}
+            (snapshot / 'state.json').write_text(json.dumps(state))
+            hashes = {str(p.relative_to(snapshot)): hashlib.sha256(p.read_bytes()).hexdigest()
+                      for p in snapshot.rglob('*') if p.is_file()}
+            (snapshot / 'manifest.json').write_text(json.dumps({'checkpoint': 9000, 'sha256': hashes}))
+            restored = restore(snapshot, work)
+            self.assertEqual(len(list((work / 'pool').iterdir())), 10)
+            self.assertTrue(all((work / folder).is_dir() for folder in ('eval', 'metrics', 'best')))
+            self.assertEqual(restored['pool_sha256'], train_ranked.pool_digest(work / 'pool'))
 
     def test_tampered_backup_rejected_before_copy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -70,6 +96,9 @@ class RestoreTests(unittest.TestCase):
     def test_build_resume_command_preserves_new_recipe_and_30m_backup(self):
         state = {
             'target_ranking': 1700.0,
+            'runtime_overrides': {'reward_metrics': True, 'player_metrics': True, 'throughput_profile': 'cpu-20k', 'continuous': True,
+                                'evolving_opponents': True, 'opponent_pool_size': 10,
+                                'promotion_margin': 50.0},
             'config': {
                 'base': 'checkpoints/3244539846',
                 'minutes': [12, 20, 20],
@@ -97,5 +126,7 @@ class RestoreTests(unittest.TestCase):
                       '--mask-entropy', '--fuzzed-kickoffs',
                       '--pfsp', '--norm-advantages', 'mode', '--epochs', '2',
                       '--critic-lr', '0.0002', '--tactical-state-prob', '0.22',
-                      '--extra-versions', 'checkpoints/3137998278'):
+                      '--extra-versions', 'checkpoints/3137998278', '--reward-metrics', '--player-metrics',
+                      '--throughput-profile', 'cpu-20k', '--continuous', '--evolving-opponents',
+                      '--opponent-pool-size', '10', '--promotion-margin', '50.0'):
             self.assertIn(token, cmd)

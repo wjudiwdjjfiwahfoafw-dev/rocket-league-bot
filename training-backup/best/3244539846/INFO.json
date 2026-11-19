@@ -1,6 +1,0 @@
-{
-    "model": "s",
-    "modes": "1v1,2v2,3v3",
-    "obs": "MultiModeObs",
-    "rewards": "Air=0.1, StrongTouch=25, VelocityBallToGoal=8, TeamSpacing=1, PickupBoost=2, SaveBoost=0.2, Bump=10, Demo=20, Goal=600, TouchAccel=5"
-}

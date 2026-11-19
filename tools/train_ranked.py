@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Run a bounded CPU training campaign. Rerun the same command to resume. Linux, stdlib only
-unless --wandb-offline is requested. See RANKED_TRAINING.md for the selection protocol.
+"""Run a staged CPU training campaign, optionally repeating blocks until stopped. Rerun to resume.
+Linux, stdlib only unless --wandb-offline is requested. See RANKED_TRAINING.md for the protocol.
 """
 import argparse
 import fcntl
@@ -65,6 +65,118 @@ def pool_digest(root):
     return h.hexdigest()
 
 
+def policy_versions(root):
+    return sorted((p for p in root.iterdir() if p.is_dir() and p.name.isdecimal()),
+                  key=lambda p: int(p.name))
+
+
+def file_hashes(path):
+    return {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(path.iterdir()) if p.is_file()}
+
+
+def frozen_versions(root):
+    """Content manifest of every saved policy version. A version may never change after creation."""
+    return {int(v.name): file_hashes(v) for v in policy_versions(root)}
+
+
+def verify_frozen_versions(root, expected):
+    """Fail if any still-present old version differs from its creation-time manifest."""
+    current = frozen_versions(root)
+    expected = {int(steps): files for steps, files in expected.items()}
+    changed = [steps for steps, files in expected.items()
+               if steps in current and current[steps] != files]
+    if changed:
+        raise RuntimeError(f'Saved policy version(s) {changed} changed after creation '
+                           '(no Elo or metadata updates are allowed)')
+    return current
+
+
+def sync_policy_versions(pool, destination):
+    """Copy the pool into the trainer only when content differs; never touch identical files."""
+    if destination.is_dir() and frozen_versions(destination) == frozen_versions(pool):
+        return False
+    replace_policy_pool(pool, destination)
+    return True
+
+
+def diverse_versions(source, count):
+    """Select evenly spaced checkpoints so the seed pool spans the full historical range."""
+    versions = policy_versions(source)
+    if len(versions) < count:
+        raise ValueError(f'Need {count} historical policies, found {len(versions)} in {source}')
+    if count == 1:
+        return [versions[-1]]
+    indices = [round(i * (len(versions) - 1) / (count - 1)) for i in range(count)]
+    return [versions[i] for i in indices]
+
+
+def copy_policy_version(source, destination):
+    destination.mkdir(parents=True, exist_ok=False)
+    for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt', 'STATS.json'):
+        if (source / name).is_file():
+            shutil.copy2(source / name, destination / name)
+    if not all((destination / name).is_file() for name in
+               ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt', 'STATS.json')):
+        if (source / 'RUNNING_STATS.json').is_file() and not (destination / 'STATS.json').exists():
+            stats = read(source / 'RUNNING_STATS.json')
+            write(destination / 'STATS.json', {'skill_ratings': stats.get('skill_ratings', {}),
+                                               'mirror_x': stats.get('mirror_x', -1)})
+        if not all((destination / name).is_file() for name in
+                   ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt', 'STATS.json')):
+            shutil.rmtree(destination, ignore_errors=True)
+            raise ValueError(f'Incomplete policy version: {source}')
+
+
+def seed_policy_pool(source, destination, count):
+    destination.mkdir(parents=True, exist_ok=False)
+    try:
+        for version in diverse_versions(source, count):
+            copy_policy_version(version, destination / version.name)
+    except Exception:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+
+
+def replace_policy_pool(source, destination):
+    """Atomically replace a native policy_versions folder from the managed opponent pool."""
+    tmp = destination.with_name(destination.name + '.updating')
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.copytree(source, tmp)
+    old = destination.with_name(destination.name + '.previous')
+    shutil.rmtree(old, ignore_errors=True)
+    if destination.exists():
+        destination.rename(old)
+    tmp.rename(destination)
+    shutil.rmtree(old, ignore_errors=True)
+
+
+def add_policy_to_pool(checkpoint_path, pool, count):
+    """Add a qualified current policy and evict the oldest timestamp, FIFO."""
+    target = pool / checkpoint_path.name
+    if target.exists():
+        return False
+    copy_policy_version(checkpoint_path, target)
+    versions = policy_versions(pool)
+    while len(versions) > count:
+        shutil.rmtree(versions.pop(0))
+    if len(versions) != count:
+        raise ValueError(f'Evolving opponent pool must contain exactly {count} policies')
+    return True
+
+
+def strongest_pool_ranking(pool):
+    ratings = []
+    for version in policy_versions(pool):
+        stats = read(version / 'STATS.json').get('skill_ratings', {})
+        if not all(mode in stats for mode in MODES):
+            raise ValueError(f'Missing three-mode Elo in {version / "STATS.json"}')
+        ratings.append((sum(float(stats[m]) for m in MODES) / len(MODES), int(version.name)))
+    if not ratings:
+        raise ValueError('Opponent policy pool is empty')
+    return max(ratings)
+
+
 def run(cmd, env, log, heartbeat=None):
     global child
     if stopping:
@@ -108,7 +220,10 @@ def score(args, path, seed, rounds, pool_hash, env, logdir):
     """Cache only a complete eval of this immutable step, pool and protocol."""
     out = args.out / 'eval' / f'{path.name}-{seed}-{rounds}.json'
     weights_sha = policy_digest(path)
-    cache_valid = out.exists() and read(out).get('policy_sha256') == weights_sha
+    cached = read(out) if out.exists() else None
+    cache_valid = cached is not None and all(cached.get(key) == value for key, value in (
+        ('policy_sha256', weights_sha), ('pool_sha256', pool_hash),
+        ('seed', seed), ('rounds', rounds), ('checkpoint_timesteps', int(path.name))))
     if not cache_valid:
         # --checkpoints takes a *parent*. Give it exactly one checkpoint, even to rate an old best.
         with tempfile.TemporaryDirectory() as tmp:
@@ -121,7 +236,7 @@ def score(args, path, seed, rounds, pool_hash, env, logdir):
             result = read(tmp / 'score.json')
             result.update(checkpoints=str(path), pool_sha256=pool_hash, policy_sha256=weights_sha)
     else:
-        result = read(out)
+        result = cached
     validate_execution(result)
     if policy_digest(path) != weights_sha:
         raise ValueError('Policy weights changed during evaluation')
@@ -132,8 +247,19 @@ def score(args, path, seed, rounds, pool_hash, env, logdir):
         raise ValueError('Frozen pool changed during campaign')
     ratings = checked_ranking(result, args.out / 'pool')
     if not cache_valid:
+        # A cached checkpoint result is a record, not a rating journal: keep the current Elo only.
+        result['ratings'] = ratings
         write(out, result)
     print(f'{path.name} seed {seed}: {ratings}', flush=True)
+    return ratings
+
+
+def endpoint_ratings(result):
+    """Keep only the current (endpoint) Elo per mode; rating series and averages are discarded."""
+    ratings = {}
+    for mode in (*MODES, 'Ranking'):
+        value = result['ratings'][mode]
+        ratings[mode] = float(value['end'] if isinstance(value, dict) else value)
     return ratings
 
 
@@ -147,13 +273,14 @@ def checked_ranking(result, pool):
         if got[step]['rounds'] * len(refs) != result['rounds'] or any(
                 not math.isclose(got[step]['ratings'][m], ref[m], abs_tol=1e-4) for m in MODES):
             raise ValueError('Unbalanced fixtures or opponent rating drift')
-    ratings = {m: result['ratings'][m]['average'] for m in MODES}
-    ratings['Ranking'] = sum(ratings.values()) / len(MODES)
+    # Report the exact endpoint Elo produced by the final rated round, never a smoothed
+    # average across the rating session. The per-mode endpoint values are preserved verbatim.
+    ratings = endpoint_ratings(result)
+    if not math.isclose(ratings['Ranking'], sum(ratings[m] for m in MODES) / len(MODES), abs_tol=1e-5):
+        raise ValueError('Ranking endpoint is not the three-mode endpoint mean')
     for m in MODES:
         if sum(result['mode_goals'].get(m, {}).values()) <= 0:
             raise ValueError(f'No goals in {m}; cannot select a checkpoint')
-    if not math.isclose(ratings['Ranking'], result['ratings']['Ranking']['average'], abs_tol=1e-5):
-        raise ValueError('Ranking is not the three-mode mean')
     return ratings
 
 
@@ -164,12 +291,26 @@ def minutes_plan(total, pilot, block):
     return minutes
 
 
+def budget_for_stage(plan, stage, continuous=False, block=15):
+    """Return a cycle budget; continuous runs repeat one fixed block after the parent rating."""
+    if continuous:
+        return 0 if stage == 0 else block
+    budgets = [0, *plan]  # stage 0 rates the parent; training stages follow it
+    return budgets[stage] if stage < len(budgets) else None
+
+
 def promote(screen, confirm, best):
     if best is None:
         return True
     a = screen['Ranking'] - best['screen']['Ranking']
     b = confirm['Ranking'] - best['confirm']['Ranking']
     return a > 0 and b > 0 and (a + b) / 2 >= 8
+
+
+def beats_strongest(screen, confirm, pool, margin):
+    strongest, version = strongest_pool_ranking(pool)
+    return (screen['Ranking'] >= strongest + margin and
+            confirm['Ranking'] >= strongest + margin), strongest, version
 
 
 def campaign(args):
@@ -228,11 +369,20 @@ def campaign(args):
         if any(p.name != '.lock' for p in out.iterdir()):
             raise ValueError(f'Refusing to overwrite a non-empty campaign directory: {out}')
         src_pool = getattr(args, 'reference_pool', None) or (base.parent / 'policy_versions')
-        count = len([p for p in src_pool.iterdir() if p.name.isdecimal() and p.is_dir()])
-        if not count or args.rounds % (2 * count):
-            raise ValueError('--rounds must be a multiple of twice the size of the (nonempty) pool')
-        shutil.copytree(src_pool, out / 'pool')
-        shutil.copytree(src_pool, learner / 'policy_versions')
+        if getattr(args, 'evolving_opponents', False):
+            if getattr(args, 'extra_versions', None):
+                raise ValueError('--extra-versions cannot be combined with --evolving-opponents')
+            pool_count = int(getattr(args, 'opponent_pool_size', 10))
+            if args.rounds % (2 * pool_count):
+                raise ValueError('--rounds must be a multiple of twice --opponent-pool-size')
+            seed_policy_pool(src_pool, out / 'pool', pool_count)
+            shutil.copytree(out / 'pool', learner / 'policy_versions')
+        else:
+            count = len(policy_versions(src_pool))
+            if not count or args.rounds % (2 * count):
+                raise ValueError('--rounds must be a multiple of twice the size of the (nonempty) pool')
+            shutil.copytree(src_pool, out / 'pool')
+            shutil.copytree(src_pool, learner / 'policy_versions')
         # Optional stronger native sparring partners for learner/policy_versions ONLY; out/pool stays immutable.
         for extra in (getattr(args, 'extra_versions', None) or []):
             extra = Path(extra)
@@ -257,10 +407,78 @@ def campaign(args):
         (out / 'best').mkdir()
         state = dict(config=config, pool_sha256=pool_digest(out / 'pool'), history=[], best=None,
                      pending=None, status='initialized')
+        if getattr(args, 'evolving_opponents', False):
+            state['runtime_overrides'] = {
+                'evolving_opponents': True,
+                'opponent_pool_size': int(getattr(args, 'opponent_pool_size', 10)),
+                'promotion_margin': float(getattr(args, 'promotion_margin', 50.0)),
+            }
         write(statefile, state)
     state = read(statefile)
     if config != state['config'] or pool_digest(out / 'pool') != state['pool_sha256']:
         raise ValueError('Campaign settings or frozen pool changed. Use the original settings or a fresh --out.')
+    # Old policies are immutable records: pin every version's files once and re-verify them at
+    # each cycle boundary, so no later save can re-rate or re-annotate an existing version.
+    state.setdefault('frozen_versions', frozen_versions(out / 'pool'))
+    verify_frozen_versions(out / 'pool', state['frozen_versions'])
+    write(statefile, state)
+    existing_runtime = state.setdefault('runtime_overrides', {})
+    want_evolving = bool(getattr(args, 'evolving_opponents', False) or existing_runtime.get('evolving_opponents'))
+    if want_evolving:
+        pool_count = int(getattr(args, 'opponent_pool_size', None) or existing_runtime.get('opponent_pool_size', 10))
+        margin = float(getattr(args, 'promotion_margin', None) if getattr(args, 'promotion_margin', None) is not None
+                       else existing_runtime.get('promotion_margin', 50.0))
+        if pool_count < 1 or args.rounds % (2 * pool_count):
+            raise ValueError('--rounds must be a multiple of twice --opponent-pool-size')
+        if not existing_runtime.get('evolving_opponents'):
+            # Migrate only at an explicit resume boundary. Keep the old frozen eval pool for provenance,
+            # but seed both training and ratings from evenly spaced historical policy versions.
+            old_hash = state['pool_sha256']
+            legacy = out / f'pool-legacy-{old_hash[:10]}'
+            if not legacy.exists():
+                shutil.copytree(out / 'pool', legacy)
+            staged = out / 'pool-evolving.new'
+            shutil.rmtree(staged, ignore_errors=True)
+            seed_policy_pool(learner / 'policy_versions', staged, pool_count)
+            shutil.rmtree(out / 'pool')
+            staged.rename(out / 'pool')
+            replace_policy_pool(out / 'pool', learner / 'policy_versions')
+            existing_runtime.update(evolving_opponents=True, opponent_pool_size=pool_count,
+                                    promotion_margin=margin, pool_generation=0,
+                                    pool_steps=[int(p.name) for p in policy_versions(out / 'pool')])
+            state['pool_sha256'] = pool_digest(out / 'pool')
+            state['status'] = 'paused'
+            write(statefile, state)
+        elif (int(existing_runtime.get('opponent_pool_size', pool_count)) != pool_count or
+              not math.isclose(float(existing_runtime.get('promotion_margin', margin)), margin)):
+            raise ValueError('Evolving opponent-pool size and promotion margin are immutable after migration')
+    # Runtime instrumentation/performance options may be enabled on an existing campaign without
+    # changing its frozen reward recipe or evaluation protocol. Persist them across clean resumes.
+    runtime_changed = False
+    if getattr(args, 'reward_metrics', False):
+        state.setdefault('runtime_overrides', {})['reward_metrics'] = True
+        runtime_changed = True
+    if getattr(args, 'player_metrics', False):
+        state.setdefault('runtime_overrides', {})['player_metrics'] = True
+        runtime_changed = True
+    if getattr(args, 'throughput_profile', None):
+        state.setdefault('runtime_overrides', {})['throughput_profile'] = args.throughput_profile
+        runtime_changed = True
+    if getattr(args, 'continuous', False):
+        state.setdefault('runtime_overrides', {})['continuous'] = True
+        runtime_changed = True
+    if runtime_changed:
+        write(statefile, state)
+    runtime_overrides = state.get('runtime_overrides') or {}
+    runtime_train_args = []
+    if runtime_overrides.get('reward_metrics'):
+        runtime_train_args.append('--reward-metrics')
+    if runtime_overrides.get('player_metrics'):
+        runtime_train_args.append('--player-metrics')
+    if runtime_overrides.get('throughput_profile') == 'cpu-20k':
+        # Benchmarked on the two-vCPU CPU runner: this is the fastest stable all-mode profile,
+        # with best clean measurements near 19.5k overall SPS. Shared-host variance still applies.
+        runtime_train_args.extend(['--games', '64', '--epochs', '1', '--collection-infer-threads', '1'])
     if out.resolve().is_relative_to(REPO.resolve()):
         state['working_directory'] = str(out.resolve().relative_to(REPO.resolve()))
     if getattr(args, 'target_ranking', None) is not None:
@@ -292,17 +510,44 @@ def campaign(args):
                                      str(out), '--out', str(out / 'online-stream'), '--online'])
     evaluate = lambda p, seed, n: score(args, p, seed, n, state['pool_sha256'], env, logdir)
     try:
+        # A pool update changes the Elo scale. Re-rate the incumbent against the current
+        # exact opponent set before comparing or promoting another checkpoint.
+        if runtime_overrides.get('evolving_opponents', False) and (
+                not state.get('best') or state['best'].get('opponent_pool_sha256') != state['pool_sha256']):
+            state['status'] = 'evaluating'
+            write(statefile, state)
+            incumbent_steps = (state.get('best') or {}).get('steps')
+            incumbent = out / 'best' / str(incumbent_steps) if incumbent_steps is not None else None
+            if incumbent is None or not incumbent.is_dir():
+                incumbent = newest(learner)
+                incumbent_steps = int(incumbent.name)
+            incumbent_screen = evaluate(incumbent, SCREEN, args.rounds)
+            incumbent_confirm = evaluate(incumbent, CONFIRM, 2 * args.rounds)
+            state['best'] = dict(steps=int(incumbent_steps), screen=incumbent_screen,
+                                 confirm=incumbent_confirm,
+                                 opponent_pool_sha256=state['pool_sha256'])
+            incumbent_copy = out / 'best' / str(incumbent_steps)
+            if not incumbent_copy.exists():
+                shutil.copytree(incumbent, incumbent_copy)
+            write(statefile, state)
         # Stage 0 is the parent, not a trained candidate. Later stages always continue the latest
         # weights, irrespective of short-term rating noise. Only the independent best copy is selected.
-        for i, minutes in enumerate([0, *plan]):
-            if i < len(state['history']):
-                continue
+        stage = len(state['history'])
+        while True:
+            minutes = budget_for_stage(
+                plan, stage, continuous=runtime_overrides.get('continuous', False),
+                block=getattr(args, 'block_minutes', 15))
+            if minutes is None:
+                break
+            i = stage
             stage_wall_start = time.monotonic()
             if state['pending'] is None:
                 state['pending'] = dict(stage=i, start_steps=int(newest(learner).name), seconds=0, wall_seconds=0, trained=False)
             pending = state['pending']
             prior_wall = float(pending.get('wall_seconds', pending.get('seconds', 0)) or 0.0)
             if minutes and not pending['trained']:
+                if runtime_overrides.get('evolving_opponents', False):
+                    sync_policy_versions(out / 'pool', learner / 'policy_versions')
                 state['status'] = 'training'
                 write(statefile, state)
                 start, previous = time.monotonic(), pending['seconds']
@@ -312,11 +557,20 @@ def campaign(args):
                     pending['wall_seconds'] = prior_wall + now - stage_wall_start
                     write(statefile, state)
                 cmd = ['bash', 'train_1v1_2v2_3v3.sh', '--checkpoints', learner, *train_args,
-                       '--seed', args.seed + i, '--run-name', 'three-mode-ranking',
+                       *runtime_train_args, '--seed', args.seed + i, '--run-name', 'three-mode-ranking',
                        '--max-minutes', max(0.02, minutes - previous / 60)]
+                if runtime_overrides.get('evolving_opponents', False):
+                    # Do not let the native saver append unqualified policies: only the outer
+                    # evaluation gate may change this ten-policy training/rating pool.
+                    cmd.extend(['--ts-per-version', '9000000000000000',
+                                '--max-versions', str(runtime_overrides['opponent_pool_size'])])
                 if int(newest(learner).name) == int(base.name):
                     cmd.append('--new-run')
-                print(f'Stage {i}/{len(plan)}: training from {newest(learner).name} ({minutes} min budget)', flush=True)
+                if runtime_overrides.get('continuous', False):
+                    stage_label = f'Cycle {i} (continuous)'
+                else:
+                    stage_label = f'Stage {i}/{len(plan)}'
+                print(f'{stage_label}: training from {newest(learner).name} ({minutes} min budget)', flush=True)
                 try:
                     run(cmd, env, logdir / f'train-{i}.log', heartbeat)
                 finally:
@@ -328,19 +582,50 @@ def campaign(args):
             steps = int(ckpt.name)
             if minutes and steps <= pending['start_steps']:
                 raise ValueError('Training did not advance')
+            versions_verified = False
+            if runtime_overrides.get('evolving_opponents', False):
+                # Prove the trainer neither re-rated nor re-annotated any old policy version.
+                verify_frozen_versions(out / 'pool', state['frozen_versions'])
+                trainer_versions = verify_frozen_versions(learner / 'policy_versions',
+                                                          state['frozen_versions'])
+                if set(trainer_versions) != {int(s) for s in state['frozen_versions']}:
+                    raise RuntimeError('Trainer policy versions do not match the frozen pool')
+                versions_verified = True
+                print(f'Frozen policy versions verified unchanged ({len(trainer_versions)})', flush=True)
+            pool_steps_before = [int(p.name) for p in policy_versions(out / 'pool')]
+            pool_hash_before = state['pool_sha256']
             screen = evaluate(ckpt, SCREEN, args.rounds)
             best = state['best']
             confirm = None
-            if best is None or screen['Ranking'] > best['screen']['Ranking']:
+            strongest = strongest_version = None
+            pool_screen_candidate = False
+            if runtime_overrides.get('evolving_opponents', False):
+                strongest, strongest_version = strongest_pool_ranking(out / 'pool')
+                pool_screen_candidate = screen['Ranking'] >= strongest + float(runtime_overrides['promotion_margin'])
+            if (best is None or screen['Ranking'] > best['screen']['Ranking'] or
+                    pool_screen_candidate):
                 confirm = evaluate(ckpt, CONFIRM, 2 * args.rounds)
             won = confirm is not None and promote(screen, confirm, best)
+            pool_promoted = False
+            if runtime_overrides.get('evolving_opponents', False) and confirm is not None:
+                pool_promoted, strongest, strongest_version = beats_strongest(
+                    screen, confirm, out / 'pool', float(runtime_overrides['promotion_margin']))
             if won:
                 dest = out / 'best' / ckpt.name
                 if not dest.exists():
                     tmp = dest.with_suffix('.copying')
                     shutil.copytree(ckpt, tmp, dirs_exist_ok=True)
                     tmp.rename(dest)
-                state['best'] = dict(steps=steps, screen=screen, confirm=confirm)
+                state['best'] = dict(steps=steps, screen=screen, confirm=confirm,
+                                     opponent_pool_sha256=pool_hash_before)
+            if pool_promoted:
+                pool_promoted = add_policy_to_pool(ckpt, out / 'pool', runtime_overrides['opponent_pool_size'])
+                if pool_promoted:
+                    replace_policy_pool(out / 'pool', learner / 'policy_versions')
+                    runtime_overrides['pool_generation'] = int(runtime_overrides.get('pool_generation', 0)) + 1
+                    runtime_overrides['pool_steps'] = [int(p.name) for p in policy_versions(out / 'pool')]
+                    state['pool_sha256'] = pool_digest(out / 'pool')
+                    state['frozen_versions'] = frozen_versions(out / 'pool')
             seconds = pending['seconds']
             wall_seconds = prior_wall + (time.monotonic() - stage_wall_start)
             delta_steps = steps - pending['start_steps']
@@ -349,7 +634,16 @@ def campaign(args):
             entry = dict(stage=i, start_steps=pending['start_steps'], steps=steps,
                          train_seconds=seconds, wall_seconds=wall_seconds,
                          steps_per_second=(delta_steps / wall_seconds) if (minutes and wall_seconds > 0) else None,
-                         screen=screen, confirm=confirm, promoted=won)
+                         screen=screen, confirm=confirm, promoted=won,
+                         opponent_pool_steps=pool_steps_before, opponent_pool_sha256=pool_hash_before,
+                         opponent_pool_generation=int(runtime_overrides.get('pool_generation', 0)) -
+                         (1 if pool_promoted else 0),
+                         strongest_opponent_ranking=strongest,
+                         strongest_opponent_steps=strongest_version,
+                         opponent_pool_promoted=pool_promoted,
+                         opponent_pool_margin=float(runtime_overrides['promotion_margin'])
+                         if runtime_overrides.get('evolving_opponents', False) else None,
+                         old_versions_verified=versions_verified)
             state['history'].append(entry)
             state['pending'] = None
             write(statefile, state)
@@ -358,8 +652,12 @@ def campaign(args):
                     shutil.rmtree(p)
             if wb is not None:
                 ranked_wandb.log_stage(wb, out, entry, state['best']['steps'])
-            print(f'Stage {i} complete. Best: {state["best"]["steps"]}; latest: {steps}', flush=True)
-            if (getattr(args, 'stop_on_target', False) and getattr(args, 'target_ranking', None) is not None and i > 0):
+            label = (f'Cycle {i} complete; starting next cycle' if runtime_overrides.get('continuous', False)
+                     else f'Stage {i} complete')
+            print(f'{label}. Best: {state["best"]["steps"]}; latest: {steps}', flush=True)
+            if (not runtime_overrides.get('continuous', False) and
+                    getattr(args, 'stop_on_target', False) and
+                    getattr(args, 'target_ranking', None) is not None and i > 0):
                 margin = float(getattr(args, 'target_margin', 0.0) or 0.0)
                 goal = args.target_ranking + margin
                 cur_best = state['best']
@@ -367,6 +665,7 @@ def campaign(args):
                         (cur_best.get('confirm') or {}).get('Ranking', 0.0) >= goal):
                     print(f'Target threshold {goal:.2f} reached on screen & confirm at stage {i}; proceeding to held-out audit.', flush=True)
                     break
+            stage += 1
         # An untouched seed measures the selected checkpoint against the original baseline on the same scale.
         state['status'] = 'auditing'
         write(statefile, state)
@@ -450,11 +749,29 @@ def main():
     parser.add_argument('--skill-minutes', type=float, help='Minutes between internal skill tracker matches')
     parser.add_argument('--ts-per-save', help='Timesteps between local checkpoint saves (e.g. 10m)')
     parser.add_argument('--rewards', help='Native comma-separated reward weights for a fresh experiment')
+    parser.add_argument('--reward-metrics', action='store_true',
+                        help='Enable sampled reward-component telemetry for this campaign and persist the choice across resumes')
+    parser.add_argument('--player-metrics', action='store_true',
+                        help='Enable sampled per-player telemetry for this campaign and persist the choice across resumes')
+    parser.add_argument('--throughput-profile', choices=('cpu-20k',),
+                        help='Use the benchmarked two-vCPU profile targeting about 20k overall steps/second')
+    parser.add_argument('--continuous', action='store_true',
+                        help='Repeat evaluation-backed training blocks indefinitely, until interrupted')
+    parser.add_argument('--evolving-opponents', action='store_true',
+                        help='Use an evenly seeded pool of old policies; add a candidate only when it clears the strongest by the promotion margin')
+    parser.add_argument('--opponent-pool-size', type=int, default=10,
+                        help='Number of saved historical policies in the evolving train/eval pool (default: 10)')
+    parser.add_argument('--promotion-margin', type=float, default=50.0,
+                        help='Raw endpoint Elo margin above the strongest pool member required for promotion (default: 50)')
     args = parser.parse_args()
     if args.backup_interval < 60:
         parser.error('--backup-interval must be at least 60 seconds')
     if args.target_ranking is not None and not (0 < args.target_ranking < 10000):
         parser.error('--target-ranking must be finite and between 0 and 10000')
+    if args.opponent_pool_size < 1:
+        parser.error('--opponent-pool-size must be positive')
+    if not math.isfinite(args.promotion_margin) or args.promotion_margin < 0:
+        parser.error('--promotion-margin must be finite and nonnegative')
     if args.lr is not None and not (0 < args.lr <= 0.01):
         parser.error('--lr must be in (0, 0.01]')
     if args.critic_lr is not None and not (0 < args.critic_lr <= 0.01):

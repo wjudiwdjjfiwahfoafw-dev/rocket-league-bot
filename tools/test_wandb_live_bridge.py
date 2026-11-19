@@ -43,6 +43,12 @@ class WandbLiveBridgeTest(unittest.TestCase):
                     'screen': {'1v1': 1540.0, '2v2': 1710.0, '3v3': 1690.0, 'Ranking': 1646.7},
                     'confirm': {'1v1': 1560.0, '2v2': 1725.0, '3v3': 1705.0, 'Ranking': 1663.3},
                     'promoted': True,
+                    'opponent_pool_steps': list(range(10)),
+                    'opponent_pool_generation': 0,
+                    'strongest_opponent_ranking': 1600.0,
+                    'strongest_opponent_steps': 9,
+                    'opponent_pool_promoted': False,
+                    'opponent_pool_margin': 50.0,
                 },
             ],
             'best': {
@@ -87,6 +93,7 @@ class WandbLiveBridgeTest(unittest.TestCase):
             self._make_campaign(root, num_rows=6)
             snap = bridge.read_campaign_snapshot(root)
             self.assertEqual(len(snap['rows']), 6)
+            self.assertTrue(snap['run_id'].startswith('rlbot-v4-'))
             body, included = bridge.encode_snapshot_body(snap)
             self.assertEqual(included, 6)
             self.assertLess(len(body), 60_000)
@@ -100,8 +107,12 @@ class WandbLiveBridgeTest(unittest.TestCase):
             # Stage 0 at parent_steps + 6 training steps (stage 1 merges into step 6).
             self.assertEqual(len(events), 7)
             self.assertEqual([s for s, _ in events], sorted(s for s, _ in events))
-            # Native live tracker rating must be prefixed with Live/ while frozen eval uses Rating/
-            self.assertIn('Live/Rating/1v1', events[-1][1])
+            # Native Elo is a discrete raw event; pool diagnostics share that evaluation step.
+            self.assertIn('Elo/1v1', events[-1][1])
+            self.assertEqual(events[-1][1]['Elo/1v1'], 1506.0)
+            self.assertEqual(events[-1][1]['Campaign/Opponent Pool Size'], 10)
+            self.assertEqual(events[-1][1]['Campaign/Strongest Opponent Elo'], 1600.0)
+            self.assertFalse(any(key.startswith('Live/') for _, event in events for key in event))
             self.assertAlmostEqual(events[-1][1]['Rating/Ranking'], 1646.7)
             self.assertAlmostEqual(events[-1][1]['Confirmation/Ranking'], 1663.3)
             self.assertAlmostEqual(events[-1][1]['Eval/Goal Share 1v1 %'], 70.0)
@@ -126,6 +137,32 @@ class WandbLiveBridgeTest(unittest.TestCase):
             # Always keeps the newest step and complete campaign stage history.
             self.assertEqual(decoded['rows'][-1]['Total Timesteps'], snap['rows'][-1]['Total Timesteps'])
             self.assertEqual(len(decoded['state']['history']), 2)
+
+    def test_load_relay_cursor_removes_legacy_stream_summary_fields(self):
+        summary = {
+            'Stream/Last Timesteps': 100,
+            'Stream/Stages': [0, 1],
+            'Stream/Source': 'github-issue#6',
+            'Campaign/Status': 'training',
+        }
+        meta = {'run_id': 'run-1', 'last_step': 200, 'stages': [0, 1, 2]}
+        step, stages = bridge.load_relay_cursor(summary, meta, expected_run_id='run-1')
+        self.assertEqual(step, 200)
+        self.assertEqual(stages, {0, 1, 2})
+        self.assertFalse(any(k.startswith('Stream/') for k in summary))
+        self.assertEqual(summary['Campaign/Status'], 'training')
+
+        # Ignore metadata belonging to a different run, while still migrating its legacy cursor.
+        step, stages = bridge.load_relay_cursor(summary, {'run_id': 'other', 'last_step': 900}, 'run-1')
+        self.assertEqual(step, -1)
+        self.assertEqual(stages, set())
+
+        class NoContains(dict):
+            def __contains__(self, key):
+                raise AssertionError('relay cursor migration must not depend on summary membership')
+        summary = NoContains({'Stream/Last Timesteps': 5, 'Stream/Stages': [0]})
+        self.assertEqual(bridge.load_relay_cursor(summary), (5, {0}))
+        self.assertEqual(summary, {})
 
     def test_relay_meta_round_trip(self):
         meta = {

@@ -68,6 +68,36 @@ def seconds_until_backup_due(destination, status, min_interval, now=None):
     return max(0.0, (last_ts + min_interval) - cur)
 
 
+def verify_frozen_versions(versions, state):
+    """Refuse to publish a snapshot in which a saved old policy was rewritten after creation."""
+    expected = {int(step): files for step, files in (state.get('frozen_versions') or {}).items()}
+    if not expected:
+        return
+    for version in versions:
+        step = int(version.name)
+        files = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                 for p in sorted(version.iterdir()) if p.is_file()}
+        if step in expected and files != expected[step]:
+            raise RuntimeError(f'Policy version {step} changed after creation; refusing backup')
+
+
+def snapshot_layout(campaign, state, latest):
+    """Return only policy-model snapshot sources for the saved campaign format."""
+    policy_pool = campaign / 'learner/policy_versions'
+    evolving = bool((state.get('runtime_overrides') or {}).get('evolving_opponents'))
+    if evolving:
+        versions = sorted((p for p in policy_pool.iterdir() if p.is_dir() and p.name.isdecimal()),
+                          key=lambda p: int(p.name))
+        expected = int(state['runtime_overrides'].get('opponent_pool_size', 10))
+        if len(versions) != expected:
+            raise RuntimeError(f'Evolving policy pool has {len(versions)} entries; expected {expected}')
+        verify_frozen_versions(versions, state)
+        return [latest, policy_pool], ['learner/' + latest.name, 'learner/policy_versions'], True
+    return ([latest, policy_pool, campaign / 'pool', campaign / 'best' / str(state['best']['steps'])],
+            ['learner/' + latest.name, 'learner/policy_versions', 'pool',
+             'best/' + str(state['best']['steps'])], False)
+
+
 def backup(campaign, destination, branch, status, min_interval=0, now=None):
     cur_now = time.time() if now is None else float(now)
     status['interval_seconds'] = min_interval
@@ -92,8 +122,7 @@ def backup(campaign, destination, branch, status, min_interval=0, now=None):
     state = json.loads((campaign / 'state.json').read_text())
     if state.get('best') is None:
         raise RuntimeError('Waiting for baseline evaluation; prior remote snapshot remains protected')
-    sources = [latest, campaign / 'learner/policy_versions', campaign / 'pool',
-               campaign / 'best' / str(state['best']['steps'])]
+    sources, targets, evolving = snapshot_layout(campaign, state, latest)
     before = [signature(p) for p in sources]
     if any(not sig for sig in before) or not FILES.issubset({p.name for p in latest.iterdir()}):
         raise RuntimeError('Checkpoint incomplete; waiting for next poll')
@@ -111,7 +140,7 @@ def backup(campaign, destination, branch, status, min_interval=0, now=None):
     with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix='backup-') as tmp:
         staging = Path(tmp) / 'snapshot'
         staging.mkdir()
-        for source, target in zip(sources, ['learner/' + latest.name, 'learner/policy_versions', 'pool', 'best/' + str(state['best']['steps'])]):
+        for source, target in zip(sources, targets):
             shutil.copytree(source, staging / target)
         if before != [signature(p) for p in sources]:
             raise RuntimeError('Checkpoint changed during copy; retrying next poll')
@@ -125,8 +154,9 @@ def backup(campaign, destination, branch, status, min_interval=0, now=None):
         state['history'] = history
         state['status'] = 'paused' if state['status'] != 'complete' else 'complete'
         (staging / 'state.json').write_text(json.dumps(state, indent=2) + '\n')
-        for folder in ('metrics', 'eval'):
-            shutil.copytree(campaign / folder, staging / folder)
+        if not evolving:
+            for folder in ('metrics', 'eval'):
+                shutil.copytree(campaign / folder, staging / folder)
         hashes = {str(p.relative_to(staging)): hashlib.sha256(p.read_bytes()).hexdigest()
                   for p in sorted(staging.rglob('*')) if p.is_file()}
         created_ts = time.time() if now is None else cur_now

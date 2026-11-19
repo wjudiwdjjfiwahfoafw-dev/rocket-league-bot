@@ -234,8 +234,8 @@ def request_sealed_wandb_key(repo: str, issue_number: int, timeout_s: float = 15
                     pass
 
 
-def campaign_run_id(config, prefix='rlbot'):
-    """Deterministic W&B run ID for a campaign so restarts/backfills resume one run cleanly."""
+def campaign_run_id(config, prefix='rlbot-v4'):
+    """Deterministic clean-schema W&B run ID; v4 excludes transport and Live-prefixed series."""
     ident = {
         'base': config.get('base'),
         'parent_steps': config.get('parent_steps'),
@@ -354,6 +354,8 @@ def encode_relay_meta(meta: dict) -> str:
     lines.append(f"- **Run ID**: `{meta.get('run_id', '')}` | **Auth**: `{meta.get('auth_mode', '')}`")
     lines.append(f"- **Last synced step**: `{meta.get('last_step', -1):,}` | **Stages synced**: `{meta.get('stages', [])}`")
     lines.append(f"- **Source**: `{meta.get('source', '')}` | **Updated**: `{meta.get('updated_iso', '')}`")
+    if meta.get('phase'):
+        lines.append(f"- **Relay phase**: `{meta['phase']}`")
     if meta.get('error'):
         lines.append(f"- **Relay note**: `{meta['error']}`")
     lines.append(f"\n<!-- WANDB_RELAY_META_START -->\n{clean}\n<!-- WANDB_RELAY_META_END -->\n")
@@ -397,7 +399,7 @@ def build_wandb_events(snapshot: dict, last_step: int, logged_stages: set[int]) 
             if k == '_time' or v is None or isinstance(v, bool):
                 continue
             if isinstance(v, (int, float)):
-                out_key = ('Live/' + k) if k.startswith('Rating/') else k
+                out_key = ('Elo/' + k.removeprefix('Rating/')) if k.startswith('Rating/') else k
                 rec[out_key] = v
         # Across a stage evaluation/restart boundary, fold fixed-pool eval, promotion copy,
         # and trainer relaunch wall time into Overall Steps/Second so zero runtime is excluded.
@@ -428,6 +430,13 @@ def build_wandb_events(snapshot: dict, last_step: int, logged_stages: set[int]) 
             rec[f'Confirmation/{m}'] = v
         rec['Campaign/Stage'] = stage
         rec['Campaign/Promoted'] = 1 if entry.get('promoted') else 0
+        if entry.get('opponent_pool_steps') is not None:
+            rec['Campaign/Opponent Pool Size'] = len(entry['opponent_pool_steps'])
+            rec['Campaign/Opponent Pool Generation'] = entry.get('opponent_pool_generation', 0)
+            rec['Campaign/Opponent Pool Promoted'] = int(bool(entry.get('opponent_pool_promoted')))
+            if entry.get('strongest_opponent_ranking') is not None:
+                rec['Campaign/Strongest Opponent Elo'] = entry['strongest_opponent_ranking']
+                rec['Campaign/Pool Promotion Margin'] = entry.get('opponent_pool_margin')
         rec['Campaign/Target Ranking'] = target
         if best_screen_so_far is not None:
             rec['Campaign/Best Screen Ranking'] = best_screen_so_far
@@ -570,6 +579,7 @@ def run_publisher(args):
                 'history_len': len((snap['state'].get('history') or [])),
                 'status': state_status,
                 'audit': bool(snap['state'].get('audit')),
+                'run_id': snap['run_id'],
             }, sort_keys=True).encode()).hexdigest()
             if digest != last_digest:
                 gh_api_json('PATCH', f'issues/{issue_number}', {'body': body}, repo=repo)
@@ -595,7 +605,8 @@ def run_publisher(args):
             tmp = status_file.with_suffix('.tmp')
             tmp.write_text(json.dumps(bridge_state, indent=2) + '\n')
             tmp.replace(status_file)
-            if args.once or state_status in ('complete', 'paused', 'failed'):
+            terminal = state_status in ('complete', 'failed') or (state_status == 'paused' and not args.keep_alive)
+            if args.once or terminal:
                 if not args.once:
                     # Stay briefly to capture the final relay confirmation URL.
                     time.sleep(min(20.0, args.interval))
@@ -669,6 +680,27 @@ def post_relay_meta_comment(repo: str, issue_number: int, comment_id: int | None
     except Exception as exc:
         print(f'Relay metadata comment note: {exc}', flush=True)
         return comment_id
+
+
+def load_relay_cursor(summary, relay_meta=None, expected_run_id=None):
+    """Load the relay cursor from GitHub metadata and remove legacy Stream summary fields.
+
+    The issue comment is the durable cursor for cloud relays; W&B summary fields are user-facing
+    metrics and should not be polluted with transport bookkeeping.
+    """
+    legacy_step = int(summary.get('Stream/Last Timesteps', -1) or -1)
+    legacy_stages = {int(s) for s in (summary.get('Stream/Stages') or [])}
+    for key in ('Stream/Last Timesteps', 'Stream/Stages', 'Stream/Source'):
+        try:
+            del summary[key]
+        except (KeyError, TypeError, AttributeError):
+            pass
+
+    if relay_meta and (expected_run_id is None or relay_meta.get('run_id') == expected_run_id):
+        last_step = max(legacy_step, int(relay_meta.get('last_step', -1) or -1))
+        stages = legacy_stages | {int(s) for s in (relay_meta.get('stages') or [])}
+        return last_step, stages
+    return legacy_step, legacy_stages
 
 
 def run_relay(args):
@@ -773,9 +805,18 @@ def run_relay(args):
         with open(summary_path, 'a') as sf:
             sf.write(f"## Live Weights & Biases Stream\n- **Run URL**: {run_url}\n- **Run ID**: `{run_id}`\n- **Auth**: `{auth_mode}`\n")
 
-    last_step = int(run.summary.get('Stream/Last Timesteps', -1))
-    logged_stages = {int(s) for s in (run.summary.get('Stream/Stages') or [])}
+    # Relay position lives in the GitHub issue metadata, not W&B's user-facing metrics.
+    _, relay_meta = find_relay_meta_on_issue(repo, args.issue) if repo and args.issue else (None, None)
+    last_step, logged_stages = load_relay_cursor(run.summary, relay_meta, expected_run_id=run_id)
     last_comment_push = 0.0
+    if repo and args.issue:
+        comment_id = post_relay_meta_comment(repo, args.issue, None, {
+            'run_url': run_url, 'run_id': run_id, 'project': project, 'auth_mode': auth_mode,
+            'last_step': last_step, 'stages': sorted(logged_stages), 'source': source,
+            'phase': 'initialized',
+            'updated_iso': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime()),
+        })
+        last_comment_push = time.monotonic()
     idle_since = None
 
     try:
@@ -800,9 +841,6 @@ def run_relay(args):
                 elif idle_since is None:
                     idle_since = time.monotonic()
 
-                run.summary['Stream/Last Timesteps'] = last_step
-                run.summary['Stream/Stages'] = sorted(logged_stages)
-                run.summary['Stream/Source'] = source
                 for k, v in summary.items():
                     if v is not None:
                         run.summary[k] = v
@@ -818,6 +856,7 @@ def run_relay(args):
                         'stages': sorted(logged_stages),
                         'source': source,
                         'campaign_status': summary.get('Campaign/Status'),
+                        'phase': 'streaming',
                         'updated_iso': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime()),
                     }
                     comment_id = post_relay_meta_comment(repo, args.issue, comment_id, meta)
@@ -839,6 +878,21 @@ def run_relay(args):
                 break
             time.sleep(args.interval)
             snap, source = load_best_remote_snapshot(args, repo, gh_token)
+    except Exception as exc:
+        error = type(exc).__name__ + ': ' + str(exc)[:240]
+        secret = os.environ.get('WANDB_API_KEY', '')
+        if secret:
+            error = error.replace(secret, '[REDACTED]')
+        if repo and args.issue:
+            post_relay_meta_comment(repo, args.issue, comment_id, {
+                'run_url': run_url, 'run_id': run_id, 'project': project,
+                'auth_mode': auth_mode, 'last_step': last_step,
+                'stages': sorted(logged_stages), 'source': source,
+                'campaign_status': (snap or {}).get('state', {}).get('status'),
+                'phase': 'error', 'error': error,
+                'updated_iso': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime()),
+            })
+        raise
     finally:
         run.finish()
         print(f'Closed/flushed W&B stream cleanly: {run_url}', flush=True)
@@ -856,6 +910,8 @@ def main():
     pub.add_argument('--status-file', type=Path, help='Local JSON file recording live W&B bridge status/URL')
     pub.add_argument('--key-file', type=Path, default=DEFAULT_KEY_FILE,
                      help='RAM-only path holding optional WANDB_API_KEY for ephemeral RSA-OAEP relay handshake')
+    pub.add_argument('--keep-alive', action='store_true',
+                     help='Keep the publisher available for relay handshakes while a campaign is paused')
     pub.add_argument('--once', action='store_true')
 
     rel = sub.add_parser('relay', help='Cloud/external side: stream live telemetry into online W&B')

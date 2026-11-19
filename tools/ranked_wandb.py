@@ -37,11 +37,18 @@ def log_stage(run, campaign, entry, best_steps):
                 if lo < row['Total Timesteps'] <= hi:
                     training_rows.append(row)
     for row in sorted(training_rows, key=lambda r: r['Total Timesteps']):
-        run.log({('Live/' + k if k.startswith('Rating/') else k): v
+        run.log({('Elo/' + k.removeprefix('Rating/') if k.startswith('Rating/') else k): v
                  for k, v in row.items() if k != '_time' and v is not None})
     record = {f'Rating/{k}': v for k, v in entry['screen'].items()}
     record.update({f'Confirmation/{k}': v for k, v in (entry['confirm'] or {}).items()})
     record.update({'Total Timesteps': hi, 'Campaign/Best Steps': best_steps, 'Campaign/Stage': entry['stage']})
+    if entry.get('opponent_pool_steps') is not None:
+        record['Campaign/Opponent Pool Size'] = len(entry['opponent_pool_steps'])
+        record['Campaign/Opponent Pool Generation'] = entry.get('opponent_pool_generation', 0)
+        record['Campaign/Opponent Pool Promoted'] = int(bool(entry.get('opponent_pool_promoted')))
+        if entry.get('strongest_opponent_ranking') is not None:
+            record['Campaign/Strongest Opponent Elo'] = entry['strongest_opponent_ranking']
+            record['Campaign/Pool Promotion Margin'] = entry.get('opponent_pool_margin')
     if entry.get('steps_per_second') is not None:
         record['Campaign/Steps Per Second'] = entry['steps_per_second']
     run.log(record)
@@ -63,8 +70,19 @@ def stream(campaign, directory, interval=10):
     run_id = 'live-' + hashlib.sha256(str(campaign.resolve()).encode()).hexdigest()[:16]
     run = start(directory, state['config'], 'three-mode-ranking-live', online=True, run_id=run_id)
     print(f'Online W&B run: {run.url}', flush=True)
-    last = int(run.summary.get('Stream/Last Timesteps', -1))
-    stages = set(run.summary.get('Stream/Stages', []))
+    directory.mkdir(parents=True, exist_ok=True)
+    cursor_file = directory / '.relay_cursor.json'
+    if cursor_file.is_file():
+        cursor = json.loads(cursor_file.read_text())
+        last = int(cursor.get('last_step', -1))
+        stages = {int(s) for s in cursor.get('stages', [])}
+    else:
+        # Migrate a prior version's cursor and immediately remove its visible summary fields.
+        last = int(run.summary.get('Stream/Last Timesteps', -1) or -1)
+        stages = {int(s) for s in (run.summary.get('Stream/Stages') or [])}
+        for key in ('Stream/Last Timesteps', 'Stream/Stages'):
+            if key in run.summary:
+                del run.summary[key]
     try:
         while True:
             state = json.loads((campaign / 'state.json').read_text())
@@ -77,7 +95,7 @@ def stream(campaign, directory, interval=10):
                     step = int(row['Total Timesteps'])
                     if step > last:
                         events.setdefault(step, {}).update({
-                            ('Live/' + k if k.startswith('Rating/') else k): v
+                            ('Elo/' + k.removeprefix('Rating/') if k.startswith('Rating/') else k): v
                             for k, v in row.items() if k != '_time' and v is not None})
             for entry in state['history']:
                 if entry['stage'] in stages:
@@ -90,8 +108,9 @@ def stream(campaign, directory, interval=10):
             for step in sorted(events):
                 run.log(events[step])
                 last = max(last, step)
-            run.summary['Stream/Last Timesteps'] = last
-            run.summary['Stream/Stages'] = sorted(stages)
+            cursor_tmp = cursor_file.with_suffix('.tmp')
+            cursor_tmp.write_text(json.dumps({'last_step': last, 'stages': sorted(stages)}) + '\n')
+            cursor_tmp.replace(cursor_file)
             run.summary['Campaign/Status'] = state['status']
             if state.get('best'):
                 run.summary['Campaign/Best Steps'] = state['best']['steps']
