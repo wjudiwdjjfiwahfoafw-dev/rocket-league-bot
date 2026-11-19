@@ -1181,6 +1181,7 @@ static const OptionDef OPTION_DEFS[] = {
 	{ "batch-size", "0", "PPO batch size, 0 = same as --ts-per-itr. Smaller = more updates per iteration" },
 	{ "minibatch-size", "0", "Samples sent through the network at once while learning (the gradients are added up, so the result stays the same). 0 = automatic: the whole batch on a GPU, about 1024 on a CPU" },
 	{ "threads", "0", "CPU threads used for learning on the CPU, 0 = automatic" },
+	{ "collection-infer-threads", "0", "CPU threads for action inference during rollouts, 0 = automatic" },
 	{ "epochs", "1", "PPO epochs per iteration" },
 	{ "lr", "1.5e-4", "Learning rate of the policy and the critic" },
 	{ "critic-lr", "0", "Separate critic learning rate, 0 = same as --lr" },
@@ -1929,6 +1930,7 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 		cfg.ppo.batchSize = cfg.ppo.tsPerItr;
 	cfg.ppo.miniBatchSize = opt.Int("minibatch-size"); // Lower this if too much VRAM is being allocated
 	cfg.learnThreads = (int)opt.Int("threads");
+	cfg.collectionInferThreads = (int)opt.Int("collection-infer-threads");
 
 	if (cfg.ppo.batchSize > cfg.ppo.tsPerItr)
 		RG_ERR_CLOSE("--batch-size can't be bigger than --ts-per-itr (no learning would happen)");
