@@ -84,8 +84,8 @@ class RankingTests(unittest.TestCase):
             ranked.write(opponent / 'STATS.json', dict(skill_ratings=ref))
             args = argparse.Namespace(base=base, out=out, bot=bot, minutes=2, pilot_minutes=1,
                                       block_minutes=1, rounds=2, threads=1, minibatch=1008,
-                                      seed=1, wandb_offline=False)
-            trainings, matches = [], []
+                                      seed=1, wandb_offline=False, reward_metrics=True)
+            trainings, training_commands, matches = [], [], []
 
             def native(cmd, env, log, heartbeat=None):
                 checkpoints = Path(cmd[cmd.index('--checkpoints') + 1])
@@ -93,6 +93,7 @@ class RankingTests(unittest.TestCase):
                 n = int(ckpt.name)
                 if cmd[0] == 'bash':
                     trainings.append(n)
+                    training_commands.append(cmd)
                     dest = checkpoints / str(n + 20)
                     shutil.copytree(ckpt, dest)
                     ranked.write(dest / 'RUNNING_STATS.json', dict(total_timesteps=n + 20, mirror_x=-1))
@@ -121,6 +122,9 @@ class RankingTests(unittest.TestCase):
                 self.assertEqual(matches.count((120, ranked.SCREEN)), 1)
                 self.assertNotIn((140, ranked.CONFIRM), matches)
                 self.assertEqual(state['best']['steps'], 120)
+                self.assertTrue(state['runtime_overrides']['reward_metrics'])
+                self.assertEqual(len(training_commands), 2)
+                self.assertTrue(all('--reward-metrics' in cmd for cmd in training_commands))
                 self.assertTrue((out / 'best/120/POLICY_OPTIM.lt').is_file())
                 self.assertEqual(state['history'][-1]['steps'], 140)
                 self.assertEqual(set(state['audit']), {'100', '120', '140'})

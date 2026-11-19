@@ -127,6 +127,25 @@ class WandbLiveBridgeTest(unittest.TestCase):
             self.assertEqual(decoded['rows'][-1]['Total Timesteps'], snap['rows'][-1]['Total Timesteps'])
             self.assertEqual(len(decoded['state']['history']), 2)
 
+    def test_load_relay_cursor_removes_legacy_stream_summary_fields(self):
+        summary = {
+            'Stream/Last Timesteps': 100,
+            'Stream/Stages': [0, 1],
+            'Stream/Source': 'github-issue#6',
+            'Campaign/Status': 'training',
+        }
+        meta = {'run_id': 'run-1', 'last_step': 200, 'stages': [0, 1, 2]}
+        step, stages = bridge.load_relay_cursor(summary, meta, expected_run_id='run-1')
+        self.assertEqual(step, 200)
+        self.assertEqual(stages, {0, 1, 2})
+        self.assertFalse(any(k.startswith('Stream/') for k in summary))
+        self.assertEqual(summary['Campaign/Status'], 'training')
+
+        # Ignore metadata belonging to a different run, while still migrating its legacy cursor.
+        step, stages = bridge.load_relay_cursor(summary, {'run_id': 'other', 'last_step': 900}, 'run-1')
+        self.assertEqual(step, -1)
+        self.assertEqual(stages, set())
+
     def test_relay_meta_round_trip(self):
         meta = {
             'run_url': 'https://wandb.ai/demo/rocket-league-ggl/runs/abc123',

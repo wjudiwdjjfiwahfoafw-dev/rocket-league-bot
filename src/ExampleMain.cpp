@@ -1177,6 +1177,7 @@ static const OptionDef OPTION_DEFS[] = {
 	{ "mode-balance", "games", "Allocate arenas equally by game (games) or by player timesteps (players)" },
 	{ "fixed-rollout", NULL, "Bootstrap unfinished trajectories at each update; keep playing the same games with the new policy" },
 	{ "lean-metrics", NULL, "Skip per-player and reward-component diagnostics; keep PPO, throughput and skill ratings" },
+	{ "reward-metrics", NULL, "Keep sampled reward-component diagnostics even when --lean-metrics is enabled" },
 	{ "batch-size", "0", "PPO batch size, 0 = same as --ts-per-itr. Smaller = more updates per iteration" },
 	{ "minibatch-size", "0", "Samples sent through the network at once while learning (the gradients are added up, so the result stays the same). 0 = automatic: the whole batch on a GPU, about 1024 on a CPU" },
 	{ "threads", "0", "CPU threads used for learning on the CPU, 0 = automatic" },
@@ -1920,7 +1921,7 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 	cfg.randomSeed = opt.Int("seed");
 
 	g_LeanMetrics = opt.Has("lean-metrics");
-	cfg.addRewardsToMetrics = !g_LeanMetrics;
+	cfg.addRewardsToMetrics = !g_LeanMetrics || opt.Has("reward-metrics");
 	cfg.ppo.fixedRollout = opt.Has("fixed-rollout");
 	cfg.ppo.tsPerItr = opt.Int("ts-per-itr");
 	cfg.ppo.batchSize = opt.Int("batch-size");

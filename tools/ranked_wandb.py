@@ -63,8 +63,19 @@ def stream(campaign, directory, interval=10):
     run_id = 'live-' + hashlib.sha256(str(campaign.resolve()).encode()).hexdigest()[:16]
     run = start(directory, state['config'], 'three-mode-ranking-live', online=True, run_id=run_id)
     print(f'Online W&B run: {run.url}', flush=True)
-    last = int(run.summary.get('Stream/Last Timesteps', -1))
-    stages = set(run.summary.get('Stream/Stages', []))
+    directory.mkdir(parents=True, exist_ok=True)
+    cursor_file = directory / '.relay_cursor.json'
+    if cursor_file.is_file():
+        cursor = json.loads(cursor_file.read_text())
+        last = int(cursor.get('last_step', -1))
+        stages = {int(s) for s in cursor.get('stages', [])}
+    else:
+        # Migrate a prior version's cursor and immediately remove its visible summary fields.
+        last = int(run.summary.get('Stream/Last Timesteps', -1) or -1)
+        stages = {int(s) for s in (run.summary.get('Stream/Stages') or [])}
+        for key in ('Stream/Last Timesteps', 'Stream/Stages'):
+            if key in run.summary:
+                del run.summary[key]
     try:
         while True:
             state = json.loads((campaign / 'state.json').read_text())
@@ -90,8 +101,9 @@ def stream(campaign, directory, interval=10):
             for step in sorted(events):
                 run.log(events[step])
                 last = max(last, step)
-            run.summary['Stream/Last Timesteps'] = last
-            run.summary['Stream/Stages'] = sorted(stages)
+            cursor_tmp = cursor_file.with_suffix('.tmp')
+            cursor_tmp.write_text(json.dumps({'last_step': last, 'stages': sorted(stages)}) + '\n')
+            cursor_tmp.replace(cursor_file)
             run.summary['Campaign/Status'] = state['status']
             if state.get('best'):
                 run.summary['Campaign/Best Steps'] = state['best']['steps']

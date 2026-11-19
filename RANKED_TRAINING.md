@@ -60,6 +60,7 @@ python3 tools/show_rating.py training-backup
 
 - **Sandboxed / restricted network (`--wandb-bridge`):** `tools/wandb_live_bridge.py publish` writes compact compressed metric frames to a branch telemetry issue; `.github/workflows/wandb-live.yml` streams them live to online W&B (`step_metric='Total Timesteps'`), authenticating via repository secret `WANDB_API_KEY` or an ephemeral RSA-3072-OAEP-SHA256 handshake against `/dev/shm/.wandb_bridge_key` (never stored in Git or logs).
 - **Direct network (`--wandb-online` / `--wandb-offline`):** `tools/ranked_wandb.py` streams directly to online W&B or exports an offline run when direct outbound W&B access is available.
+- Reward-component diagnostics are sampled during training and appear under `Rewards/…`; use `python3 tools/resume_training.py --reward-metrics` to enable them on a resumed campaign without changing its frozen PPO/evaluation recipe. The live relay keeps its delivery cursor in GitHub issue metadata and does not publish `Stream/…` transport fields as W&B summary metrics.
 
 ## Regression tests
 

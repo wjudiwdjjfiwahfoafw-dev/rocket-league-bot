@@ -261,6 +261,13 @@ def campaign(args):
     state = read(statefile)
     if config != state['config'] or pool_digest(out / 'pool') != state['pool_sha256']:
         raise ValueError('Campaign settings or frozen pool changed. Use the original settings or a fresh --out.')
+    # Runtime telemetry options may be enabled on an existing campaign without changing its
+    # frozen PPO recipe or evaluation protocol. Persist them so clean resumes keep the setting.
+    if getattr(args, 'reward_metrics', False):
+        state.setdefault('runtime_overrides', {})['reward_metrics'] = True
+        write(statefile, state)
+    runtime_overrides = state.get('runtime_overrides') or {}
+    runtime_train_args = ['--reward-metrics'] if runtime_overrides.get('reward_metrics') else []
     if out.resolve().is_relative_to(REPO.resolve()):
         state['working_directory'] = str(out.resolve().relative_to(REPO.resolve()))
     if getattr(args, 'target_ranking', None) is not None:
@@ -312,7 +319,7 @@ def campaign(args):
                     pending['wall_seconds'] = prior_wall + now - stage_wall_start
                     write(statefile, state)
                 cmd = ['bash', 'train_1v1_2v2_3v3.sh', '--checkpoints', learner, *train_args,
-                       '--seed', args.seed + i, '--run-name', 'three-mode-ranking',
+                       *runtime_train_args, '--seed', args.seed + i, '--run-name', 'three-mode-ranking',
                        '--max-minutes', max(0.02, minutes - previous / 60)]
                 if int(newest(learner).name) == int(base.name):
                     cmd.append('--new-run')
@@ -450,6 +457,8 @@ def main():
     parser.add_argument('--skill-minutes', type=float, help='Minutes between internal skill tracker matches')
     parser.add_argument('--ts-per-save', help='Timesteps between local checkpoint saves (e.g. 10m)')
     parser.add_argument('--rewards', help='Native comma-separated reward weights for a fresh experiment')
+    parser.add_argument('--reward-metrics', action='store_true',
+                        help='Enable sampled reward-component telemetry for this campaign and persist the choice across resumes')
     args = parser.parse_args()
     if args.backup_interval < 60:
         parser.error('--backup-interval must be at least 60 seconds')

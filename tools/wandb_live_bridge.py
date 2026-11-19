@@ -595,7 +595,8 @@ def run_publisher(args):
             tmp = status_file.with_suffix('.tmp')
             tmp.write_text(json.dumps(bridge_state, indent=2) + '\n')
             tmp.replace(status_file)
-            if args.once or state_status in ('complete', 'paused', 'failed'):
+            terminal = state_status in ('complete', 'failed') or (state_status == 'paused' and not args.keep_alive)
+            if args.once or terminal:
                 if not args.once:
                     # Stay briefly to capture the final relay confirmation URL.
                     time.sleep(min(20.0, args.interval))
@@ -669,6 +670,25 @@ def post_relay_meta_comment(repo: str, issue_number: int, comment_id: int | None
     except Exception as exc:
         print(f'Relay metadata comment note: {exc}', flush=True)
         return comment_id
+
+
+def load_relay_cursor(summary, relay_meta=None, expected_run_id=None):
+    """Load the relay cursor from GitHub metadata and remove legacy Stream summary fields.
+
+    The issue comment is the durable cursor for cloud relays; W&B summary fields are user-facing
+    metrics and should not be polluted with transport bookkeeping.
+    """
+    legacy_step = int(summary.get('Stream/Last Timesteps', -1) or -1)
+    legacy_stages = {int(s) for s in (summary.get('Stream/Stages') or [])}
+    for key in ('Stream/Last Timesteps', 'Stream/Stages', 'Stream/Source'):
+        if key in summary:
+            del summary[key]
+
+    if relay_meta and (expected_run_id is None or relay_meta.get('run_id') == expected_run_id):
+        last_step = max(legacy_step, int(relay_meta.get('last_step', -1) or -1))
+        stages = legacy_stages | {int(s) for s in (relay_meta.get('stages') or [])}
+        return last_step, stages
+    return legacy_step, legacy_stages
 
 
 def run_relay(args):
@@ -773,8 +793,9 @@ def run_relay(args):
         with open(summary_path, 'a') as sf:
             sf.write(f"## Live Weights & Biases Stream\n- **Run URL**: {run_url}\n- **Run ID**: `{run_id}`\n- **Auth**: `{auth_mode}`\n")
 
-    last_step = int(run.summary.get('Stream/Last Timesteps', -1))
-    logged_stages = {int(s) for s in (run.summary.get('Stream/Stages') or [])}
+    # Relay position lives in the GitHub issue metadata, not W&B's user-facing metrics.
+    _, relay_meta = find_relay_meta_on_issue(repo, args.issue) if repo and args.issue else (None, None)
+    last_step, logged_stages = load_relay_cursor(run.summary, relay_meta, expected_run_id=run_id)
     last_comment_push = 0.0
     idle_since = None
 
@@ -800,9 +821,6 @@ def run_relay(args):
                 elif idle_since is None:
                     idle_since = time.monotonic()
 
-                run.summary['Stream/Last Timesteps'] = last_step
-                run.summary['Stream/Stages'] = sorted(logged_stages)
-                run.summary['Stream/Source'] = source
                 for k, v in summary.items():
                     if v is not None:
                         run.summary[k] = v
@@ -856,6 +874,8 @@ def main():
     pub.add_argument('--status-file', type=Path, help='Local JSON file recording live W&B bridge status/URL')
     pub.add_argument('--key-file', type=Path, default=DEFAULT_KEY_FILE,
                      help='RAM-only path holding optional WANDB_API_KEY for ephemeral RSA-OAEP relay handshake')
+    pub.add_argument('--keep-alive', action='store_true',
+                     help='Keep the publisher available for relay handshakes while a campaign is paused')
     pub.add_argument('--once', action='store_true')
 
     rel = sub.add_parser('relay', help='Cloud/external side: stream live telemetry into online W&B')
