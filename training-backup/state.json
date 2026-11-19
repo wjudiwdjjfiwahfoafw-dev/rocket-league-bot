@@ -212,7 +212,7 @@
     "stage": 5,
     "start_steps": 3295689882,
     "seconds": 0,
-    "wall_seconds": 120.00532444100008,
+    "wall_seconds": 928.270919734,
     "trained": false
   },
   "status": "paused",
@@ -221,6 +221,7 @@
   "runtime_overrides": {
     "reward_metrics": true,
     "throughput_profile": "cpu-20k",
-    "player_metrics": true
+    "player_metrics": true,
+    "continuous": true
   }
 }
