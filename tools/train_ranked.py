@@ -216,14 +216,30 @@ def validate_execution(result):
         raise ValueError('Ranked training requires sampled actions at temperature 1; no evaluation calibration')
 
 
-def score(args, path, seed, rounds, pool_hash, env, logdir):
+def checkpoint_elo(path):
+    """The current policy's own Elo. A tournament continues from it; it is never reset to a pool value."""
+    ratings = (read(path / 'RUNNING_STATS.json').get('skill_ratings') or {})
+    return {mode: float(ratings[mode]) for mode in MODES if mode in ratings}
+
+
+def write_back_elo(path, ratings):
+    """A tournament's result belongs to the current policy, so its own metadata carries the new Elo."""
+    stats = read(path / 'RUNNING_STATS.json')
+    stats['skill_ratings'] = {mode: float(ratings[mode]) for mode in MODES}
+    write(path / 'RUNNING_STATS.json', stats)
+
+
+def score(args, path, seed, rounds, pool_hash, env, logdir, write_back=False):
     """Cache only a complete eval of this immutable step, pool and protocol."""
     out = args.out / 'eval' / f'{path.name}-{seed}-{rounds}.json'
     weights_sha = policy_digest(path)
+    start = checkpoint_elo(path)
     cached = read(out) if out.exists() else None
+    # A cached result stays valid either before or after its Elo was written back into the policy.
     cache_valid = cached is not None and all(cached.get(key) == value for key, value in (
         ('policy_sha256', weights_sha), ('pool_sha256', pool_hash),
-        ('seed', seed), ('rounds', rounds), ('checkpoint_timesteps', int(path.name))))
+        ('seed', seed), ('rounds', rounds), ('checkpoint_timesteps', int(path.name)))) and (
+        cached.get('start_elo') == start or cached.get('end_elo') == start)
     if not cache_valid:
         # --checkpoints takes a *parent*. Give it exactly one checkpoint, even to rate an old best.
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,6 +251,10 @@ def score(args, path, seed, rounds, pool_hash, env, logdir):
                  '--rate-out', tmp / 'score.json'], env, logdir / 'eval.log')
             result = read(tmp / 'score.json')
             result.update(checkpoints=str(path), pool_sha256=pool_hash, policy_sha256=weights_sha)
+            # The tournament must have started from the Elo this policy already had, not from a shared anchor.
+            for mode, value in result['ratings'].items():
+                if mode in start and 'start' in value and not math.isclose(value['start'], start[mode], abs_tol=1e-3):
+                    raise ValueError(f'{path.name} started {mode} at {value["start"]}, not at its own Elo {start[mode]}')
     else:
         result = cached
     validate_execution(result)
@@ -246,9 +266,15 @@ def score(args, path, seed, rounds, pool_hash, env, logdir):
     if pool_digest(args.out / 'pool') != pool_hash:
         raise ValueError('Frozen pool changed during campaign')
     ratings = checked_ranking(result, args.out / 'pool')
+    if write_back:
+        # Only the current policy moves: its tournament result is stored in the policy itself, and it keeps
+        #accumulating from there. Opponents are never written to.
+        write_back_elo(path, ratings)
     if not cache_valid:
         # A cached checkpoint result is a record, not a rating journal: keep the current Elo only.
         result['ratings'] = ratings
+        result['start_elo'] = start
+        result['end_elo'] = {mode: ratings[mode] for mode in MODES}
         write(out, result)
     print(f'{path.name} seed {seed}: {ratings}', flush=True)
     return ratings
@@ -508,7 +534,8 @@ def campaign(args):
     if getattr(args, 'wandb_online', False):
         streamer = subprocess.Popen([sys.executable, str(REPO / 'tools/ranked_wandb.py'),
                                      str(out), '--out', str(out / 'online-stream'), '--online'])
-    evaluate = lambda p, seed, n: score(args, p, seed, n, state['pool_sha256'], env, logdir)
+    evaluate = lambda p, seed, n, write_back=False: score(
+        args, p, seed, n, state['pool_sha256'], env, logdir, write_back=write_back)
     try:
         # A pool update changes the Elo scale. Re-rate the incumbent against the current
         # exact opponent set before comparing or promoting another checkpoint.
@@ -594,7 +621,7 @@ def campaign(args):
                 print(f'Frozen policy versions verified unchanged ({len(trainer_versions)})', flush=True)
             pool_steps_before = [int(p.name) for p in policy_versions(out / 'pool')]
             pool_hash_before = state['pool_sha256']
-            screen = evaluate(ckpt, SCREEN, args.rounds)
+            screen = evaluate(ckpt, SCREEN, args.rounds, write_back=True)
             best = state['best']
             confirm = None
             strongest = strongest_version = None
@@ -604,7 +631,7 @@ def campaign(args):
                 pool_screen_candidate = screen['Ranking'] >= strongest + float(runtime_overrides['promotion_margin'])
             if (best is None or screen['Ranking'] > best['screen']['Ranking'] or
                     pool_screen_candidate):
-                confirm = evaluate(ckpt, CONFIRM, 2 * args.rounds)
+                confirm = evaluate(ckpt, CONFIRM, 2 * args.rounds, write_back=True)
             won = confirm is not None and promote(screen, confirm, best)
             pool_promoted = False
             if runtime_overrides.get('evolving_opponents', False) and confirm is not None:

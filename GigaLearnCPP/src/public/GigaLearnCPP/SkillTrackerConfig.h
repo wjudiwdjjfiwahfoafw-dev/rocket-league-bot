@@ -24,20 +24,21 @@ namespace GGL {
 
 		// Rating sessions, for runs where the rating games should cost as little run time as possible (0 = off):
 		//	instead of one round of games every updateInterval iterations, sessionRounds rounds are played in a row
-		//	every updateIntervalMinutes minutes of run time. The reported rating is then the average after each of the
-		//	last three quarters of the rounds (the first quarter lets the rating catch up with what was learned since
-		//	the last session), and the current rating is set to this average.
+		//	every updateIntervalMinutes minutes of run time. The reported rating is the endpoint after the last round:
+		//	the policy's own rating, which keeps accumulating from tournament to tournament instead of being reset.
 		// New policy versions are then saved right after a session (the first session after tsPerVersion timesteps
 		//	since the newest version), so that every version starts with an up-to-date rating.
-		// How many rounds: the rating follows a change of skill over about 7 rounds of 32 games (at 5 points per goal),
-		//	so a session should not be much shorter. More rounds make the reported rating only slowly more exact
-		//	(measured: +-17 points with 10 rounds, +-16 with 20, +-12 with 60), so short sessions more often
-		//	tell more for the same cost than long ones rarely.
+		// How many rounds: the session's fixed budget is spread over its rounds, so a longer session moves the
+		//	rating in smaller steps that follow a change of skill more smoothly. Short sessions are cheap and a
+		//	long one reads the same budget more finely, so short sessions more often tell more for the same cost.
 		float updateIntervalMinutes = 0;
 		int sessionRounds = 10;
 
-		// Rating increment scale per-goal
-		float ratingInc = 5; 
+		// Maximum net rating change of the current policy, per mode, in one tournament: a rating session,
+		//a --rate-rounds run, or one round of the older update-interval mode. The per-round increment is
+		//budget / rounds, so the maximum does not depend on how many goals, games, arenas or players the
+		//tournament has. Only the current policy's rating moves; saved versions never change.
+		float tournamentEloBudget = 25;
 
 		// Initial rating of the first version
 		float initialRating = 0; 

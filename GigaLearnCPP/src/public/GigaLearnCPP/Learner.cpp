@@ -612,6 +612,9 @@ void GGL::Learner::StartSkillMatches(int numRounds, std::function<void(int round
 	if (config.skillTracker.anchored && numRounds % (2 * versionMgr->versions.size()) != 0)
 		RG_ERR_CLOSE("Anchored rounds must be a multiple of twice the opponent count");
 	RG_LOG("Learner::StartSkillMatches(): " << numRounds << " rounds against " << versionMgr->versions.size() << " policy versions");
+	// The rounds are one tournament: the current policy keeps the Elo it arrived with, and each round
+	//may move it by a constant fraction of the tournament budget.
+	versionMgr->BeginTournament(numRounds);
 
 	try {
 		for (int i = 0; i < numRounds && !quitRequested; i++) {

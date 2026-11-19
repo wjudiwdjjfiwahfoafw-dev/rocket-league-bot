@@ -37,11 +37,14 @@ python3 tools/train_ranked.py \
 `Rating/Ranking = (1v1 Elo + 2v2 Elo + 3v3 Elo) / 3` using native sampled actions at softmax temperature `1.0` (`deterministic=False`, `policy_temperature=1.0`).
 
 - **Frozen opponent pool:** 5 immutable left-mirrored policies in `training-backup/pool/` (SHA-256 `aa048b453da50d8c7c96913692d3e4d70bd141b5247cbd6519fe11589539d81c`).
-- **Fixtures:** Balanced across all opponents and both team colors, 36 arenas (12 per mode), `K=5` per goal (only candidate Elo updates); the reported rating is the exact endpoint of the final rated round.
+- **Fixtures:** Balanced across all opponents and both team colors, 36 arenas (12 per mode). The reported rating is the exact endpoint of the final rated round.
+- **Tournament Elo:** One Elo update per round per mode, from that round's share of its goals:
+  `delta = (C / rounds) * (goals_for / (goals_for + goals_against) - expected)`, `expected = 1 / (1 + 10^((opponent - current) / 400))`, `C = 25` (`--skill-tournament-elo-budget`). The sum over the rounds is at most `C` however many goals, arenas or players a tournament has, so there is no cap on top of the rating — only a fixed budget per tournament.
 - **Promotion gate:** Screen on seed `1009` (`40` rounds); if above current best screen, confirm on seed `2003` (`80` rounds). Promotes only when both matching-seed scores improve and their mean gain is at least `+8.0` Elo.
 - **Held-out audit:** Evaluated once at campaign completion (`80` rounds on the predeclared `--audit-seed`, never used for selection).
 - **Cache integrity:** Cached `eval/*.json` entries fingerprint `POLICY.lt`, `SHARED_HEAD.lt`, and `SHARED_HEAD_SLOTS.lt` by SHA-256 and validate pool digest and temperature-1 sampled execution.
-- **Current Elo only:** A saved result stores the endpoint Elo of each mode (`1v1`, `2v2`, `3v3`, `Ranking`) and nothing else. The per-round rating series, session start and averaged Elo are discarded, so checkpoint JSON stays a compact record of the current rating instead of a rating history.
+- **Current Elo only:** A saved result stores the endpoint Elo of each mode (`1v1`, `2v2`, `3v3`, `Ranking`), plus the Elo the tournament started from and the one written back into the policy so a cached result stays verifiable. The per-round rating series and averaged Elo are discarded, so checkpoint JSON stays a compact record of the current rating instead of a rating history.
+- **Continuous rating:** The evaluated policy keeps the Elo it already carries — it never starts from the pool's mean or any other shared anchor. The tournament's endpoint is written back into that policy's own `RUNNING_STATS.json` (`skill_ratings`), so the next tournament starts where this one ended, and an accepted pool copy carries exactly the Elo it had when it was accepted. Opponents are only ever read.
 
 ## Evolving old-policy pool
 
@@ -51,7 +54,7 @@ After each training block, the candidate is rated against all ten opponents on t
 
 ### Immutable old policies
 
-Every policy version accepted into the pool is an immutable snapshot: its weights and a small `STATS.json` holding only the Elo it had at acceptance (`skill_ratings`) plus the mirror flag are written exactly once, when the copy is created. This does not apply to the active learner — its weights keep training and its own `RUNNING_STATS.json` Elo keeps updating at every save and evaluation tournament; only the accepted copy is frozen. Nothing rewrites an accepted copy afterwards — no Elo updates from later skill matches, no metadata refreshes — so old policy folders stay byte-identical and backup commits stop churning. Ratings that move in memory during a run are intentionally not persisted.
+Every policy version accepted into the pool is an immutable snapshot: its weights and a small `STATS.json` holding only the Elo it had at acceptance (`skill_ratings`) plus the mirror flag are written exactly once, when the copy is created. This does not apply to the active learner — its weights keep training, and its own Elo is continuous: native sessions move it, and every anchored evaluation tournament writes its endpoint back into the learner's `RUNNING_STATS.json`. Only the accepted copy is frozen. Nothing rewrites an accepted copy afterwards — no Elo updates from later skill matches, no metadata refreshes — so old policy folders stay byte-identical and backup commits stop churning.
 
 `train_ranked.py` pins a SHA-256 manifest of every version (`frozen_versions` in `state.json`), re-checks it at each cycle boundary, and compares the trainer's `learner/policy_versions/` copy against the pool after every training block. Any re-rated or re-annotated old version aborts the cycle instead of being silently accepted, and the GitHub backup worker refuses to publish a snapshot that no longer matches the pinned manifest. Identical copies are never recopied, and FIFO eviction only removes whole versions.
 
