@@ -164,38 +164,64 @@ void GGL::PolicyVersionManager::SortVersions() {
 
 void GGL::PolicyVersionManager::PrepareAnchoredPool(uint32_t seed) {
 	if (versions.empty()) RG_ERR_CLOSE("Cannot rate against an empty anchored pool");
-	skill.curRatings.data.clear(); // No live rating from the candidate checkpoint enters its evaluation.
+
+	// The current policy continues with the Elo it has already earned. A tournament never resets the rating
+	//to a common starting point: the opponents are anchored, the current policy is not.
 	for (size_t i = 0; i < skill.envSet->arenas.size(); ++i) {
 		auto setter = static_cast<RLGC::FuzzedKickoffState*>(skill.envSet->stateSetters[i]);
 		setter->SetSeed(seed + (uint32_t)i + 1);
 		auto name = SkillRating::GetModeName(skill.envSet->state.gameStates[i]);
-		if (skill.curRatings.data.contains(name)) continue;
-		double sum = 0;
 		for (const auto& v : versions) {
 			if (!v.ratings.data.contains(name))
 				RG_ERR_CLOSE("Anchored opponent " << v.timesteps << " has no " << name << " rating");
-			sum += v.ratings.data.at(name);
 		}
-		skill.curRatings.data[name] = (float)(sum / versions.size());
+		// Materialize a mode the checkpoint has not been rated in yet (same rule as every other first rating).
+		skill.curRatings.GetRating(name, skill.config.initialRating);
 	}
+
+	{
+		std::stringstream line;
+		bool first = true;
+		for (auto& pair : skill.curRatings.data) {
+			line << (first ? "" : ", ") << pair.first << " " << pair.second;
+			first = false;
+		}
+		RG_LOG("Anchored pool: the current policy continues at " << line.str());
+	}
+}
+
+void GGL::PolicyVersionManager::BeginTournament(int rounds) {
+	// Spread one constant Elo budget over the tournament's rounds, so its maximum effect does not depend on
+	//how many goals or games those rounds produce.
+	int n = RS_MAX(rounds, 1);
+	skill.curTournamentK = skill.config.tournamentEloBudget / (float)n;
+	skill.roundGoals.clear();
+}
+
+void GGL::PolicyVersionManager::ApplyRoundElo(const SkillRating& opponent) {
+	for (auto& pair : skill.roundGoals) {
+		auto& mode = pair.first;
+		int goalsFor = pair.second.first, goalsAgainst = pair.second.second;
+		int total = goalsFor + goalsAgainst;
+		if (total <= 0)
+			continue; // No goals in this mode this round: nothing was learned, so nothing moves.
+
+		auto opponentRating = opponent.data.find(mode);
+		if (opponentRating == opponent.data.end())
+			continue;
+		float& rating = skill.curRatings.GetRating(mode, skill.config.initialRating);
+
+		// One Elo update from the round's aggregated result: the share of goals won against the expectation.
+		float expected = 1 / (powf(10, (opponentRating->second - rating) / 400) + 1);
+		float observed = (float)goalsFor / (float)total;
+		rating += skill.curTournamentK * (observed - expected);
+	}
+	skill.roundGoals.clear();
 }
 
 void GGL::PolicyVersionManager::RunSkillMatches(PPOLearner* ppo, Report& report, int fixture) {
 	RG_NO_GRAD;
 	
-	auto fnUpdateRatings = [this](SkillRating& winner, SkillRating& loser, RLGC::GameState& state) {
-		float& winnerRating = winner.GetRating(state, skill.config.initialRating);
-		float& loserRating = loser.GetRating(state, skill.config.initialRating);
-		
-		// Update according to ELO math
-		float expDelta = (loserRating - winnerRating) / 400;
-		float expected = 1 / (powf(10, expDelta) + 1);
-
-		if (!skill.config.anchored || &winner == &skill.curRatings)
-			winnerRating += skill.config.ratingInc * (1 - expected);
-		if (!skill.config.anchored || &loser == &skill.curRatings)
-			loserRating += skill.config.ratingInc * (expected - 1);
-	};
 
 	
 	Team newTeam;
@@ -317,13 +343,13 @@ void GGL::PolicyVersionManager::RunSkillMatches(PPOLearner* ppo, Report& report,
 				std::string modeName = SkillRating::GetModeName(gs);
 
 				if (RS_TEAM_FROM_Y(gs.ball.pos.y) != newTeam) {
-					fnUpdateRatings(skill.curRatings, oldVersion.ratings, gs);
 					newGoals++;
 					modeGoals[modeName].first++;
+					skill.roundGoals[modeName].first++;
 				} else {
-					fnUpdateRatings(oldVersion.ratings, skill.curRatings, gs);
 					oldGoals++;
 					modeGoals[modeName].second++;
+					skill.roundGoals[modeName].second++;
 				}
 
 				skill.curGoals++;
@@ -346,6 +372,14 @@ void GGL::PolicyVersionManager::RunSkillMatches(PPOLearner* ppo, Report& report,
 
 		stepsPlayed++;
 	}
+
+	// A rated round (--rate-rounds) is complete after its sim time even when some arenas did not score;
+	//during training a round without enough goals continues from the same position, so its goals are kept.
+	bool roundFinished = !(skill.curGoals < skill.envSet->arenas.size() && totalSimTime < skill.config.maxSimTime);
+	if (fixture >= 0)
+		roundFinished = true;
+	if (roundFinished)
+		ApplyRoundElo(oldVersion.ratings);
 
 	for (auto& pair : skill.curRatings.data) {
 		float prevRating = prevCurRatings.GetRating(pair.first, skill.config.initialRating);
@@ -398,6 +432,7 @@ void GGL::PolicyVersionManager::RunSkillMatches(PPOLearner* ppo, Report& report,
 
 void GGL::PolicyVersionManager::RunSkillSession(PPOLearner* ppo, Report& report) {
 	int numRounds = RS_MAX(skill.config.sessionRounds, 1);
+	BeginTournament(numRounds);
 	RG_LOG("Rating session: " << numRounds << " rounds of skill matches against " << versions.size() << " policy versions...");
 
 	Timer timer = {};
@@ -508,6 +543,7 @@ void GGL::PolicyVersionManager::OnIteration(struct PPOLearner* ppo, Report& repo
 		skill.iterationsSinceRan++;
 		if (skill.iterationsSinceRan >= skill.config.updateInterval && !versions.empty()) {
 			skill.iterationsSinceRan = 0;
+			BeginTournament(1);
 			RunSkillMatches(ppo, report);
 		}
 	}

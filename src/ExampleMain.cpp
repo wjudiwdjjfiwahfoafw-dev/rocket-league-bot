@@ -1223,7 +1223,7 @@ static const OptionDef OPTION_DEFS[] = {
 	{ "skill-arenas", "16", "Skill tracker: rating games played at once" },
 	{ "skill-sim-time", "45", "Skill tracker: seconds of game time per round of rating games" },
 	{ "skill-max-sim-time", "240", "Skill tracker: seconds of game time after which the opponent version is changed, even without enough goals" },
-	{ "skill-rating-inc", "5", "Skill tracker: rating points at stake per goal" },
+	{ "skill-tournament-elo-budget", "100", "Skill tracker: maximum rating change of the current policy per tournament (a session or a --rate-rounds run), per game mode. Each round may move the rating by budget / rounds, however many goals are scored" },
 	{ "skill-initial-rating", "0", "Skill tracker: rating of the first version" },
 	{ "skill-deterministic", NULL, "Skill tracker: both sides pick their most likely action (like the bot does in the real game) instead of sampling" },
 	{ "ts-per-version", "25m", "Timesteps between saved policy versions (kept in <checkpoints>/policy_versions). They are the opponents of the skill tracker and of --train-vs-old. With --skill-minutes: a version is saved after the first rating session that comes this many timesteps after the newest version" },
@@ -1721,7 +1721,8 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 }
 
 // Rates a checkpoint with GigaLearn's skill tracker, without training it (--rate-rounds).
-// The loaded policy plays the tracker's matches against saved policy versions, and every goal moves the ratings as during training.
+// The loaded policy plays the tracker's matches against saved policy versions, and the tournament moves its own rating as during training:
+// it starts from the Elo the checkpoint carries, and the result changes that policy, not the versions it played.
 // With the versions of one run as common opponents (--rate-versions), checkpoints of different runs get ratings on the same scale.
 int RunRating(Learner* learner, const Options& opt, int numRounds) {
 	struct OpponentStats {
@@ -1799,7 +1800,8 @@ int RunRating(Learner* learner, const Options& opt, int numRounds) {
 	j["real_seconds"] = realSeconds;
 	j["settings"] = {
 		{ "arenas", tracker.numArenas }, { "sim_time", tracker.simTime }, { "max_sim_time", tracker.maxSimTime },
-		{ "rating_inc", tracker.ratingInc }, { "initial_rating", tracker.initialRating }, { "deterministic", tracker.deterministic },
+		{ "tournament_elo_budget", tracker.tournamentEloBudget }, { "initial_rating", tracker.initialRating },
+		{ "deterministic", tracker.deterministic },
 		{ "policy_temperature", learner->config.ppo.policyTemperature }
 	};
 
@@ -1816,8 +1818,8 @@ int RunRating(Learner* learner, const Options& opt, int numRounds) {
 	for (auto& pair : ratingSeries) {
 		auto& series = pair.second;
 
-		// Every goal moves the rating by a few points, so a single reading is noisy.
-		// The average leaves out the first quarter of the rounds, in which the rating still moves from its starting value to its level against these opponents.
+		// A tournament spreads one fixed budget over its rounds, so a single reading still carries the noise of
+		// its goal share. The average leaves out the first quarter of the rounds, in which the rating still moves from its starting value to its level against these opponents.
 		size_t avgStart = series.size() / 4;
 		double avg = 0;
 		for (size_t i = avgStart; i < series.size(); i++)
@@ -2001,7 +2003,7 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 	cfg.skillTracker.numArenas = (int)RS_MAX(opt.Int("skill-arenas"), (int64_t)1);
 	cfg.skillTracker.simTime = (float)opt.Num("skill-sim-time");
 	cfg.skillTracker.maxSimTime = (float)opt.Num("skill-max-sim-time");
-	cfg.skillTracker.ratingInc = (float)opt.Num("skill-rating-inc");
+	cfg.skillTracker.tournamentEloBudget = (float)RS_MAX(opt.Num("skill-tournament-elo-budget"), 0.0);
 	cfg.skillTracker.initialRating = (float)opt.Num("skill-initial-rating");
 	cfg.skillTracker.deterministic = opt.Has("skill-deterministic");
 
@@ -2091,7 +2093,7 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 			j["skill_arenas"] = cfg.skillTracker.numArenas;
 			j["skill_sim_time"] = cfg.skillTracker.simTime;
 			j["skill_max_sim_time"] = cfg.skillTracker.maxSimTime;
-			j["skill_rating_inc"] = cfg.skillTracker.ratingInc;
+			j["skill_tournament_elo_budget"] = cfg.skillTracker.tournamentEloBudget;
 			j["skill_initial_rating"] = cfg.skillTracker.initialRating;
 			j["skill_deterministic"] = cfg.skillTracker.deterministic;
 		}
@@ -2145,7 +2147,7 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 			RS_STR("every " << cfg.skillTracker.updateInterval << " iterations");
 		RG_LOG(
 			"\tSkill tracker: " << when << ", " << cfg.skillTracker.numArenas << " games of " <<
-			cfg.skillTracker.simTime << "s, " << cfg.skillTracker.ratingInc << " points per goal, " <<
+			cfg.skillTracker.simTime << "s, at most " << cfg.skillTracker.tournamentEloBudget << " rating points per tournament, " <<
 			(cfg.skillTracker.deterministic ? "most likely" : "sampled") << " actions"
 		);
 	}

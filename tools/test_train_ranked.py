@@ -246,9 +246,14 @@ class RankingTests(unittest.TestCase):
                 pool = Path(cmd[cmd.index('--rate-versions') + 1])
                 refs = {int(p.name): ranked.read(p / 'STATS.json')['skill_ratings']
                         for p in ranked.policy_versions(pool)}
-                elo = 1700.0 if step == 120 else 1500.0
-                ratings = {m: {'average': elo - 25, 'end': elo} for m in MODES}
-                ratings['Ranking'] = {'average': elo - 25, 'end': elo}
+                start = ranked.checkpoint_elo(candidate_path)
+                if not start:
+                    start = {m: 1500.0 for m in MODES}
+                elo = {m: value + 10.0 for m, value in start.items()}
+                ratings = {m: {'start': start[m], 'average': elo[m] - 25, 'end': elo[m]} for m in MODES}
+                ratings['Ranking'] = {'start': sum(start.values()) / 3,
+                                      'average': sum(elo.values()) / 3 - 25,
+                                      'end': sum(elo.values()) / 3}
                 result = dict(
                     anchored=True, seed=seed, rounds=rounds, checkpoint_timesteps=step,
                     settings={'deterministic': False, 'policy_temperature': 1.0}, ratings=ratings,
@@ -268,11 +273,93 @@ class RankingTests(unittest.TestCase):
             self.assertEqual(len(ranked.policy_versions(out / 'pool')), 10)
             self.assertNotIn(1, [int(p.name) for p in ranked.policy_versions(out / 'pool')])
             self.assertIn(120, [int(p.name) for p in ranked.policy_versions(out / 'pool')])
+            # The accepted policy carries the Elo its own tournaments earned (screen 1700 then confirm 1710,
+            #each +10), and its checkpoint keeps it for the next tournament.
+            self.assertEqual(ranked.read(out / 'pool/120/STATS.json')['skill_ratings'],
+                             {m: 1720.0 for m in MODES})
+            self.assertEqual(ranked.checkpoint_elo(out / 'learner/120'), {m: 1720.0 for m in MODES})
             self.assertEqual({p.name for p in ranked.policy_versions(out / 'pool')},
                              {p.name for p in ranked.policy_versions(out / 'learner/policy_versions')})
             train_cmd = train_commands[0]
             self.assertEqual(train_cmd[train_cmd.index('--max-versions') + 1], '10')
             self.assertEqual(train_cmd[train_cmd.index('--ts-per-version') + 1], '9000000000000000')
+
+    def test_tournament_elo_is_continuous_and_written_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / 'campaign'
+            (out / 'eval').mkdir(parents=True)
+            pool = out / 'pool'
+            (pool / '100').mkdir(parents=True)
+            ref = {m: 1500.0 for m in MODES}
+            ranked.write(pool / '100/STATS.json', {'skill_ratings': ref})
+            bot = root / 'GigaLearnBot'
+            bot.touch()
+            args = argparse.Namespace(bot=bot, out=out, threads=1, rounds=2)
+
+            def make(path, elo):
+                path.mkdir()
+                for name in (*ranked.MODELS, *(k + '_OPTIM' for k in ranked.MODELS), 'SHARED_HEAD_SLOTS'):
+                    (path / (name + '.lt')).write_bytes(b'weights')
+                ranked.write(path / 'INFO.json', {'model': 's'})
+                ranked.write(path / 'RUNNING_STATS.json', dict(total_timesteps=int(path.name), mirror_x=-1,
+                                                               skill_ratings=elo))
+            current, frozen = root / '1200', root / '1100'
+            make(current, {m: 1500.0 + 10 * i for i, m in enumerate(MODES)})
+            make(frozen, {m: 1400.0 for m in MODES})
+
+            starts = []
+            def native(cmd, env, log, heartbeat=None):
+                ckpt = ranked.newest(Path(cmd[cmd.index('--checkpoints') + 1]))
+                start = ranked.checkpoint_elo(ckpt)
+                starts.append((int(ckpt.name), start))
+                delta = 5.0
+                ends = {m: start[m] + delta for m in MODES}
+                ratings = {m: {'start': start[m], 'average': start[m] + delta / 2,
+                               'average_rounds': 1, 'series': [start[m], ends[m]], 'end': ends[m]}
+                           for m in MODES}
+                ratings['Ranking'] = {'start': sum(start.values()) / 3, 'average': sum(ends.values()) / 3,
+                                      'end': sum(ends.values()) / 3}
+                rounds = int(cmd[cmd.index('--rate-rounds') + 1])
+                ranked.write(cmd[cmd.index('--rate-out') + 1], dict(
+                    anchored=True, seed=int(cmd[cmd.index('--seed') + 1]),
+                    rounds=rounds, checkpoint_timesteps=int(ckpt.name),
+                    settings=dict(deterministic=False, policy_temperature=1.0), ratings=ratings,
+                    opponents=[dict(timesteps=100, rounds=rounds, ratings=ref)],
+                    mode_goals={m: {'for': 3, 'against': 1} for m in MODES}))
+
+            digest, first = pool_digest(pool), {m: 1500.0 + 10 * i for i, m in enumerate(MODES)}
+            ranking = lambda values: dict(values, Ranking=sum(values.values()) / len(MODES))
+            with patch.object(ranked, 'run', native):
+                screen = ranked.score(args, current, 1009, 2, digest, {}, root, write_back=True)
+                self.assertEqual(screen, ranking({m: first[m] + 5 for m in MODES}))
+                self.assertEqual(ranked.checkpoint_elo(current), {m: screen[m] for m in MODES})
+                frozen_before = ranked.read(frozen / 'RUNNING_STATS.json')
+                # The next tournament continues where this one ended, from the policy itself.
+                confirm = ranked.score(args, current, 2003, 4, digest, {}, root, write_back=True)
+                self.assertEqual(confirm, ranking({m: first[m] + 10 for m in MODES}))
+                self.assertEqual(starts[-1], (1200, {m: screen[m] for m in MODES}))
+                self.assertEqual(ranked.checkpoint_elo(current), {m: confirm[m] for m in MODES})
+                # A cached tournament is not replayed, and does not move the Elo a second time.
+                self.assertEqual(ranked.score(args, current, 2003, 4, digest, {}, root, write_back=True), confirm)
+                self.assertEqual(ranked.checkpoint_elo(current), {m: confirm[m] for m in MODES})
+                self.assertEqual(len(starts), 2)
+                # Opponents are only ever read: evaluating one must not create or change its Elo.
+                self.assertEqual(ranked.score(args, frozen, 1009, 2, digest, {}, root),
+                                 ranking({m: 1405.0 for m in MODES}))
+                self.assertEqual(ranked.read(frozen / 'RUNNING_STATS.json'), frozen_before)
+
+                # A tournament that did not start from the policy's own Elo is a failure, not a rating.
+                def detached(cmd, env, log, heartbeat=None):
+                    native(cmd, env, log)
+                    out_file = cmd[cmd.index('--rate-out') + 1]
+                    result = ranked.read(Path(out_file))
+                    for value in result['ratings'].values():
+                        value['start'] = 1500.0
+                    ranked.write(Path(out_file), result)
+                with patch.object(ranked, 'run', detached):
+                    with self.assertRaises(ValueError):
+                        ranked.score(args, frozen, 4001, 2, digest, {}, root)
 
     def test_saved_evaluations_keep_current_elo_without_history(self):
         result = dict(ratings={m: {'start': 10.0, 'series': [1.0, 2.0], 'average': 1.5,
@@ -291,6 +378,8 @@ class RankingTests(unittest.TestCase):
             ckpt.mkdir()
             for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
                 (ckpt / name).write_bytes(b'weights')
+            ranked.write(ckpt / 'RUNNING_STATS.json',
+                         dict(total_timesteps=1200, mirror_x=-1, skill_ratings={m: 1500.0 for m in MODES}))
             pool = out / 'pool'
             (pool / '100').mkdir(parents=True)
             ref = {m: 1500.0 for m in MODES}
@@ -305,7 +394,7 @@ class RankingTests(unittest.TestCase):
                 ranked.write(cmd[cmd.index('--rate-out') + 1], dict(
                     anchored=True, seed=1009, rounds=2, checkpoint_timesteps=1200,
                     settings=dict(deterministic=False, policy_temperature=1.0),
-                    ratings={m: {'start': value - 950.0, 'series': [value - 10.0, value],
+                    ratings={m: {'start': 1500.0 if m in MODES else 1500.0, 'series': [value - 10.0, value],
                                  'average': value - 5.0, 'average_rounds': 2, 'end': value}
                              for m, value in ends.items()},
                     opponents=[dict(timesteps=100, rounds=2, ratings=ref)],
