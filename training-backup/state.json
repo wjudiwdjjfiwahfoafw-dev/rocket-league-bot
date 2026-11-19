@@ -133,9 +133,13 @@
     "stage": 1,
     "start_steps": 3244539846,
     "seconds": 0,
-    "trained": false
+    "trained": false,
+    "wall_seconds": 630.0117265339999
   },
   "status": "paused",
   "working_directory": "results/weights1700-v3/campaign",
-  "target_ranking": 1700.0
+  "target_ranking": 1700.0,
+  "runtime_overrides": {
+    "reward_metrics": true
+  }
 }
