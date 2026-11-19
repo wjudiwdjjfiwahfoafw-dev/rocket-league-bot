@@ -314,6 +314,76 @@
       "strongest_opponent_steps": 3337121412,
       "opponent_pool_promoted": false,
       "opponent_pool_margin": 50.0
+    },
+    {
+      "stage": 10,
+      "start_steps": 3365176467,
+      "steps": 3378309552,
+      "train_seconds": 928.3539561329999,
+      "wall_seconds": 1035.7788656479988,
+      "steps_per_second": 12679.429399038514,
+      "screen": {
+        "1v1": 1536.166015625,
+        "2v2": 1747.799072265625,
+        "3v3": 1718.2890625,
+        "Ranking": 1667.4180501302083
+      },
+      "confirm": null,
+      "promoted": false,
+      "opponent_pool_steps": [
+        2661279888,
+        2729865360,
+        2800066152,
+        2836021944,
+        2988686064,
+        3137998278,
+        3256829382,
+        3282071802,
+        3309403092,
+        3337121412
+      ],
+      "opponent_pool_sha256": "c2d02f8b29da1e5e1f3ffe9aa9854a135a11b9cd3cb53722e850d226c3b7c234",
+      "opponent_pool_generation": 0,
+      "strongest_opponent_ranking": 1675.6540120442708,
+      "strongest_opponent_steps": 3337121412,
+      "opponent_pool_promoted": false,
+      "opponent_pool_margin": 50.0,
+      "old_versions_verified": true
+    },
+    {
+      "stage": 11,
+      "start_steps": 3378309552,
+      "steps": 3391102857,
+      "train_seconds": 931.3383856849996,
+      "wall_seconds": 1034.9134808769995,
+      "steps_per_second": 12361.71451661716,
+      "screen": {
+        "1v1": 1580.2611083984375,
+        "2v2": 1760.4788818359375,
+        "3v3": 1722.69287109375,
+        "Ranking": 1687.8109537760417
+      },
+      "confirm": null,
+      "promoted": false,
+      "opponent_pool_steps": [
+        2661279888,
+        2729865360,
+        2800066152,
+        2836021944,
+        2988686064,
+        3137998278,
+        3256829382,
+        3282071802,
+        3309403092,
+        3337121412
+      ],
+      "opponent_pool_sha256": "c2d02f8b29da1e5e1f3ffe9aa9854a135a11b9cd3cb53722e850d226c3b7c234",
+      "opponent_pool_generation": 0,
+      "strongest_opponent_ranking": 1675.6540120442708,
+      "strongest_opponent_steps": 3337121412,
+      "opponent_pool_promoted": false,
+      "opponent_pool_margin": 50.0,
+      "old_versions_verified": true
     }
   ],
   "best": {
@@ -333,10 +403,10 @@
     "opponent_pool_sha256": "c2d02f8b29da1e5e1f3ffe9aa9854a135a11b9cd3cb53722e850d226c3b7c234"
   },
   "pending": {
-    "stage": 10,
-    "start_steps": 3365176467,
+    "stage": 12,
+    "start_steps": 3391102857,
     "seconds": 0,
-    "wall_seconds": 761.8598280299993,
+    "wall_seconds": 480.0566065740004,
     "trained": false
   },
   "status": "paused",
