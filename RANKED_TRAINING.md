@@ -51,7 +51,7 @@ After each training block, the candidate is rated against all ten opponents on t
 
 ### Immutable old policies
 
-Every saved policy version is written exactly once, when it is created: its weights plus a small `STATS.json` holding only its current Elo (`skill_ratings`) and mirror flag. Nothing rewrites an existing version afterwards — no Elo updates from later skill matches, no metadata refreshes — so old policy folders stay byte-identical and backup commits stop churning. Ratings that move in memory during a run are intentionally not persisted.
+Every policy version accepted into the pool is an immutable snapshot: its weights and a small `STATS.json` holding only the Elo it had at acceptance (`skill_ratings`) plus the mirror flag are written exactly once, when the copy is created. This does not apply to the active learner — its weights keep training and its own `RUNNING_STATS.json` Elo keeps updating at every save and evaluation tournament; only the accepted copy is frozen. Nothing rewrites an accepted copy afterwards — no Elo updates from later skill matches, no metadata refreshes — so old policy folders stay byte-identical and backup commits stop churning. Ratings that move in memory during a run are intentionally not persisted.
 
 `train_ranked.py` pins a SHA-256 manifest of every version (`frozen_versions` in `state.json`), re-checks it at each cycle boundary, and compares the trainer's `learner/policy_versions/` copy against the pool after every training block. Any re-rated or re-annotated old version aborts the cycle instead of being silently accepted, and the GitHub backup worker refuses to publish a snapshot that no longer matches the pinned manifest. Identical copies are never recopied, and FIFO eviction only removes whole versions.
 
