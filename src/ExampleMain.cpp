@@ -1177,6 +1177,7 @@ static const OptionDef OPTION_DEFS[] = {
 	{ "mode-balance", "games", "Allocate arenas equally by game (games) or by player timesteps (players)" },
 	{ "fixed-rollout", NULL, "Bootstrap unfinished trajectories at each update; keep playing the same games with the new policy" },
 	{ "lean-metrics", NULL, "Skip per-player and reward-component diagnostics; keep PPO, throughput and skill ratings" },
+	{ "player-metrics", NULL, "Keep sampled per-player diagnostics even when --lean-metrics is enabled" },
 	{ "reward-metrics", NULL, "Keep sampled reward-component diagnostics even when --lean-metrics is enabled" },
 	{ "batch-size", "0", "PPO batch size, 0 = same as --ts-per-itr. Smaller = more updates per iteration" },
 	{ "minibatch-size", "0", "Samples sent through the network at once while learning (the gradients are added up, so the result stays the same). 0 = automatic: the whole batch on a GPU, about 1024 on a CPU" },
@@ -1627,6 +1628,7 @@ static std::chrono::steady_clock::time_point g_TrainStartTime = {};
 static double g_MaxTrainSeconds = 0;
 static uint64_t g_MaxTimesteps = 0;
 static bool g_LeanMetrics = false;
+static bool g_PlayerMetrics = false;
 
 // First Ctrl+C (or kill): finish the current iteration, save, and stop. Second one: exit immediately.
 void OnStopSignal(int signalNum) {
@@ -1659,11 +1661,12 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 		}
 	}
 
-	if (g_LeanMetrics) return; // PPO, timings, step reward and all ratings are still reported
+	if (g_LeanMetrics && !g_PlayerMetrics) return; // PPO, timings, step reward and all ratings are still reported
 
-	// To prevent expensive metrics from eating at performance, we will only run them on 1/4th of steps
-	// This doesn't really matter unless you have expensive metrics (which this example doesn't)
-	bool doExpensiveMetrics = (rand() % 4) == 0;
+	// Keep expensive diagnostics lightweight but evenly sample a quarter of steps; the metrics
+	// receiver averages the skipped iteration windows so the published series are less noisy.
+	static uint64_t metricSampleCounter = 0;
+	bool doExpensiveMetrics = (metricSampleCounter++ % 4) == 0;
 
 	// Add our metrics
 	for (auto& state : states) {
@@ -1922,6 +1925,7 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 	cfg.randomSeed = opt.Int("seed");
 
 	g_LeanMetrics = opt.Has("lean-metrics");
+	g_PlayerMetrics = opt.Has("player-metrics");
 	cfg.addRewardsToMetrics = !g_LeanMetrics || opt.Has("reward-metrics");
 	cfg.ppo.fixedRollout = opt.Has("fixed-rollout");
 	cfg.ppo.tsPerItr = opt.Int("ts-per-itr");

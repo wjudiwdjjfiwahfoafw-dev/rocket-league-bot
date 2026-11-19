@@ -40,7 +40,7 @@ def restore(snapshot=SNAPSHOT, work=WORK):
 
 
 def build_resume_command(state, work, without_services=False, backup_interval=1800,
-                         reward_metrics=False, throughput_profile=None):
+                         reward_metrics=False, player_metrics=False, throughput_profile=None):
     config = state['config']
     cmd = [sys.executable, str(ROOT / 'tools/train_ranked.py'), '--base', config['base'],
            '--out', str(work.relative_to(ROOT)), '--minutes', str(sum(config['minutes'])),
@@ -72,6 +72,8 @@ def build_resume_command(state, work, without_services=False, backup_interval=18
             cmd.append(flag)
     if reward_metrics or (state.get('runtime_overrides') or {}).get('reward_metrics'):
         cmd.append('--reward-metrics')
+    if player_metrics or (state.get('runtime_overrides') or {}).get('player_metrics'):
+        cmd.append('--player-metrics')
     profile = throughput_profile or (state.get('runtime_overrides') or {}).get('throughput_profile')
     if profile:
         cmd += ['--throughput-profile', profile]
@@ -87,6 +89,8 @@ def main():
                         help='Run trainer only, without automatic GitHub backup or W&B bridge')
     parser.add_argument('--reward-metrics', action='store_true',
                         help='Enable and persist sampled reward-component telemetry on the resumed campaign')
+    parser.add_argument('--player-metrics', action='store_true',
+                        help='Enable and persist sampled per-player telemetry on the resumed campaign')
     parser.add_argument('--throughput-profile', choices=('cpu-20k',),
                         help='Use the benchmarked two-vCPU profile targeting about 20k overall steps/second')
     parser.add_argument('--backup-interval', type=int, default=1800,
@@ -104,7 +108,7 @@ def main():
         return
     cmd = build_resume_command(state, work, without_services=args.without_services,
                                backup_interval=args.backup_interval, reward_metrics=args.reward_metrics,
-                               throughput_profile=args.throughput_profile)
+                               player_metrics=args.player_metrics, throughput_profile=args.throughput_profile)
     print('Resuming only because this script was explicitly invoked.', flush=True)
     subprocess.run(cmd, cwd=ROOT, check=True)
 

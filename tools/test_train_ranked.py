@@ -84,7 +84,7 @@ class RankingTests(unittest.TestCase):
             ranked.write(opponent / 'STATS.json', dict(skill_ratings=ref))
             args = argparse.Namespace(base=base, out=out, bot=bot, minutes=2, pilot_minutes=1,
                                       block_minutes=1, rounds=2, threads=1, minibatch=1008,
-                                      seed=1, wandb_offline=False, reward_metrics=True,
+                                      seed=1, wandb_offline=False, reward_metrics=True, player_metrics=True,
                                       throughput_profile='cpu-20k')
             trainings, training_commands, matches = [], [], []
 
@@ -124,8 +124,10 @@ class RankingTests(unittest.TestCase):
                 self.assertNotIn((140, ranked.CONFIRM), matches)
                 self.assertEqual(state['best']['steps'], 120)
                 self.assertTrue(state['runtime_overrides']['reward_metrics'])
+                self.assertTrue(state['runtime_overrides']['player_metrics'])
                 self.assertEqual(len(training_commands), 2)
                 self.assertTrue(all('--reward-metrics' in cmd for cmd in training_commands))
+                self.assertTrue(all('--player-metrics' in cmd for cmd in training_commands))
                 for cmd in training_commands:
                     for flag, expected in (('--games', '64'), ('--epochs', '1'),
                                            ('--collection-infer-threads', '1')):

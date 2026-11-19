@@ -70,7 +70,7 @@ class RestoreTests(unittest.TestCase):
     def test_build_resume_command_preserves_new_recipe_and_30m_backup(self):
         state = {
             'target_ranking': 1700.0,
-            'runtime_overrides': {'reward_metrics': True, 'throughput_profile': 'cpu-20k'},
+            'runtime_overrides': {'reward_metrics': True, 'player_metrics': True, 'throughput_profile': 'cpu-20k'},
             'config': {
                 'base': 'checkpoints/3244539846',
                 'minutes': [12, 20, 20],
@@ -98,6 +98,6 @@ class RestoreTests(unittest.TestCase):
                       '--mask-entropy', '--fuzzed-kickoffs',
                       '--pfsp', '--norm-advantages', 'mode', '--epochs', '2',
                       '--critic-lr', '0.0002', '--tactical-state-prob', '0.22',
-                      '--extra-versions', 'checkpoints/3137998278', '--reward-metrics',
+                      '--extra-versions', 'checkpoints/3137998278', '--reward-metrics', '--player-metrics',
                       '--throughput-profile', 'cpu-20k'):
             self.assertIn(token, cmd)

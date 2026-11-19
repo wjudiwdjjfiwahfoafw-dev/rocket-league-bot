@@ -267,6 +267,9 @@ def campaign(args):
     if getattr(args, 'reward_metrics', False):
         state.setdefault('runtime_overrides', {})['reward_metrics'] = True
         runtime_changed = True
+    if getattr(args, 'player_metrics', False):
+        state.setdefault('runtime_overrides', {})['player_metrics'] = True
+        runtime_changed = True
     if getattr(args, 'throughput_profile', None):
         state.setdefault('runtime_overrides', {})['throughput_profile'] = args.throughput_profile
         runtime_changed = True
@@ -276,6 +279,8 @@ def campaign(args):
     runtime_train_args = []
     if runtime_overrides.get('reward_metrics'):
         runtime_train_args.append('--reward-metrics')
+    if runtime_overrides.get('player_metrics'):
+        runtime_train_args.append('--player-metrics')
     if runtime_overrides.get('throughput_profile') == 'cpu-20k':
         # Benchmarked on the two-vCPU CPU runner: this is the fastest stable all-mode profile,
         # with best clean measurements near 19.5k overall SPS. Shared-host variance still applies.
@@ -471,6 +476,8 @@ def main():
     parser.add_argument('--rewards', help='Native comma-separated reward weights for a fresh experiment')
     parser.add_argument('--reward-metrics', action='store_true',
                         help='Enable sampled reward-component telemetry for this campaign and persist the choice across resumes')
+    parser.add_argument('--player-metrics', action='store_true',
+                        help='Enable sampled per-player telemetry for this campaign and persist the choice across resumes')
     parser.add_argument('--throughput-profile', choices=('cpu-20k',),
                         help='Use the benchmarked two-vCPU profile targeting about 20k overall steps/second')
     args = parser.parse_args()
