@@ -12,6 +12,7 @@ from unittest.mock import patch
 import train_ranked as ranked
 from train_ranked import (MODES, checked_ranking, endpoint_ratings, frozen_versions, minutes_plan,
                              pool_digest, promote, sync_policy_versions, verify_frozen_versions)
+import verify_frozen_versions as frozen_report
 
 
 class RankingTests(unittest.TestCase):
@@ -346,6 +347,32 @@ class RankingTests(unittest.TestCase):
             ranked.write(pool / '200/STATS.json', {'skill_ratings': {m: 1600.0 for m in MODES}})
             with self.assertRaises(RuntimeError):
                 verify_frozen_versions(pool, manifest)
+
+    def test_frozen_version_report_flags_a_mutated_old_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = Path(tmp)
+            pool = campaign / 'pool'
+            trainer = campaign / 'learner/policy_versions'
+            for root in (pool, trainer):
+                for step in (100, 200):
+                    version = root / str(step)
+                    version.mkdir(parents=True)
+                    for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt', 'STATS.json'):
+                        ranked.write(version / name, {'skill_ratings': {m: 1500.0 for m in MODES}}) \
+                            if name.endswith('.json') else (version / name).write_bytes(f'{step}'.encode())
+            manifest = frozen_versions(pool)
+            ranked.write(campaign / 'state.json', {'frozen_versions': manifest})
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(frozen_report.report(campaign))
+                # The trainer copy drifting from the pool is enough to fail the report.
+                ranked.write(trainer / '200/STATS.json', {'skill_ratings': {m: 1600.0 for m in MODES}})
+                self.assertFalse(frozen_report.report(campaign))
+            # A whole-version eviction from both copies is not a mutation.
+            ranked.write(trainer / '200/STATS.json', {'skill_ratings': {m: 1500.0 for m in MODES}})
+            for root in (pool, trainer):
+                shutil.rmtree(root / '100')
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(frozen_report.report(campaign))
 
 
 if __name__ == '__main__':

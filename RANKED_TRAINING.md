@@ -65,6 +65,12 @@ Inspect saved ratings anytime with:
 python3 tools/show_rating.py training-backup
 ```
 
+Verify that the ten old policies are still byte-identical to their creation record (exit code `1` on any rewrite):
+
+```bash
+python3 tools/verify_frozen_versions.py results/weights1700-v3/campaign
+```
+
 ## Throughput accounting (`Overall Steps/Second`)
 
 `Overall Steps/Second` uses contiguous monotonic wall-clock intervals with zero excluded CPU or wall time:
