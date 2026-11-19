@@ -17,10 +17,14 @@ import verify_frozen_versions as frozen_report
 
 class RankingTests(unittest.TestCase):
     def test_weight_only_execution_guard(self):
-        ranked.validate_execution({'settings': {'deterministic': False, 'policy_temperature': 1.0}})
-        for settings in ({}, {'deterministic': True, 'policy_temperature': 1.0},
-                         {'deterministic': False, 'policy_temperature': 0.4},
-                         {'deterministic': False, 'policy_temperature': 2.0}):
+        ranked.validate_execution({'settings': {'deterministic': False, 'policy_temperature': 1.0,
+                                                'fuzzed_kickoffs': True}})
+        for settings in ({}, {'deterministic': True, 'policy_temperature': 1.0, 'fuzzed_kickoffs': True},
+                         {'deterministic': False, 'policy_temperature': 0.4, 'fuzzed_kickoffs': True},
+                         {'deterministic': False, 'policy_temperature': 2.0, 'fuzzed_kickoffs': True},
+                         # A rating without randomized kickoffs would replay its start states every round.
+                         {'deterministic': False, 'policy_temperature': 1.0},
+                         {'deterministic': False, 'policy_temperature': 1.0, 'fuzzed_kickoffs': False}):
             with self.assertRaises(ValueError):
                 ranked.validate_execution({'settings': settings})
 
@@ -165,7 +169,7 @@ class RankingTests(unittest.TestCase):
                 elo = {100: 1500, 120: 1530, 140: 1520}[n]
                 ranked.write(cmd[cmd.index('--rate-out') + 1], dict(
                     anchored=True, seed=seed, rounds=rounds, checkpoint_timesteps=n,
-                    settings=dict(deterministic=False, policy_temperature=1.0),
+                    settings=dict(deterministic=False, policy_temperature=1.0, fuzzed_kickoffs=True),
                     ratings={m: {'average': elo + 10, 'end': elo} for m in (*MODES, 'Ranking')},
                     opponents=[dict(timesteps=1, rounds=rounds, ratings=ref)],
                     mode_goals={m: {'for': 3, 'against': 1} for m in MODES}))
@@ -185,6 +189,9 @@ class RankingTests(unittest.TestCase):
                 self.assertEqual(len(training_commands), 2)
                 self.assertTrue(all('--reward-metrics' in cmd for cmd in training_commands))
                 self.assertTrue(all('--player-metrics' in cmd for cmd in training_commands))
+                # Start states must vary even though this campaign never asked for it explicitly.
+                self.assertTrue(all('--fuzzed-kickoffs' in cmd for cmd in training_commands))
+                self.assertTrue(state['runtime_overrides']['fuzzed_kickoffs'])
                 for cmd in training_commands:
                     for flag, expected in (('--games', '64'), ('--epochs', '1'),
                                            ('--collection-infer-threads', '1')):
@@ -256,7 +263,8 @@ class RankingTests(unittest.TestCase):
                                       'end': sum(elo.values()) / 3}
                 result = dict(
                     anchored=True, seed=seed, rounds=rounds, checkpoint_timesteps=step,
-                    settings={'deterministic': False, 'policy_temperature': 1.0}, ratings=ratings,
+                    settings={'deterministic': False, 'policy_temperature': 1.0, 'fuzzed_kickoffs': True},
+                    ratings=ratings,
                     opponents=[dict(timesteps=t, rounds=rounds // len(refs), ratings=r)
                                for t, r in refs.items()],
                     mode_goals={m: {'for': 3, 'against': 1} for m in MODES})
@@ -281,6 +289,8 @@ class RankingTests(unittest.TestCase):
             self.assertEqual({p.name for p in ranked.policy_versions(out / 'pool')},
                              {p.name for p in ranked.policy_versions(out / 'learner/policy_versions')})
             train_cmd = train_commands[0]
+            self.assertIn('--fuzzed-kickoffs', train_cmd)
+            self.assertTrue(state['runtime_overrides']['fuzzed_kickoffs'])
             self.assertEqual(train_cmd[train_cmd.index('--max-versions') + 1], '10')
             self.assertEqual(train_cmd[train_cmd.index('--ts-per-version') + 1], '9000000000000000')
 
@@ -324,7 +334,8 @@ class RankingTests(unittest.TestCase):
                 ranked.write(cmd[cmd.index('--rate-out') + 1], dict(
                     anchored=True, seed=int(cmd[cmd.index('--seed') + 1]),
                     rounds=rounds, checkpoint_timesteps=int(ckpt.name),
-                    settings=dict(deterministic=False, policy_temperature=1.0), ratings=ratings,
+                    settings=dict(deterministic=False, policy_temperature=1.0, fuzzed_kickoffs=True),
+                    ratings=ratings,
                     opponents=[dict(timesteps=100, rounds=rounds, ratings=ref)],
                     mode_goals={m: {'for': 3, 'against': 1} for m in MODES}))
 
@@ -393,7 +404,7 @@ class RankingTests(unittest.TestCase):
             def native(cmd, env, log, heartbeat=None):
                 ranked.write(cmd[cmd.index('--rate-out') + 1], dict(
                     anchored=True, seed=1009, rounds=2, checkpoint_timesteps=1200,
-                    settings=dict(deterministic=False, policy_temperature=1.0),
+                    settings=dict(deterministic=False, policy_temperature=1.0, fuzzed_kickoffs=True),
                     ratings={m: {'start': 1500.0 if m in MODES else 1500.0, 'series': [value - 10.0, value],
                                  'average': value - 5.0, 'average_rounds': 2, 'end': value}
                              for m, value in ends.items()},

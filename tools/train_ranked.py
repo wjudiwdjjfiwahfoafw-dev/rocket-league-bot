@@ -214,6 +214,9 @@ def validate_execution(result):
     settings = result.get('settings', {})
     if settings.get('deterministic') is not False or settings.get('policy_temperature') != 1.0:
         raise ValueError('Ranked training requires sampled actions at temperature 1; no evaluation calibration')
+    if settings.get('fuzzed_kickoffs') is not True:
+        # Without a randomized kickoff every round of a tournament would replay the same start state.
+        raise ValueError('Rating requires fuzzed kickoffs; a round must not repeat its start state')
 
 
 def checkpoint_elo(path):
@@ -380,6 +383,10 @@ def campaign(args):
     for attribute, flag in bool_overrides:
         if getattr(args, attribute, False) and flag not in train_args:
             train_args.append(flag)
+    if '--fuzzed-kickoffs' not in train_args:
+        # Rollouts against a near-deterministic policy need varying start states just like the rating rounds,
+        #so a campaign never trains on the plain centre-spot kickoff.
+        train_args.append('--fuzzed-kickoffs')
     if getattr(args, 'rewards', None):
         train_args.extend(['--rewards', args.rewards])
     config = dict(base=str(base), preset_sha256=hashlib.sha256((REPO / 'train_1v1_2v2_3v3.sh').read_bytes()).hexdigest(),
@@ -501,6 +508,11 @@ def campaign(args):
         runtime_train_args.append('--reward-metrics')
     if runtime_overrides.get('player_metrics'):
         runtime_train_args.append('--player-metrics')
+    if runtime_overrides.get('fuzzed_kickoffs') is not True:
+        # Record the start-state randomization this campaign trains and rates with, so it cannot drift.
+        runtime_overrides['fuzzed_kickoffs'] = True
+        state['runtime_overrides'] = runtime_overrides
+        write(statefile, state)
     if runtime_overrides.get('throughput_profile') == 'cpu-20k':
         # Benchmarked on the two-vCPU CPU runner: this is the fastest stable all-mode profile,
         # with best clean measurements near 19.5k overall SPS. Shared-host variance still applies.

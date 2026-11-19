@@ -47,6 +47,10 @@ python3 tools/train_ranked.py \
 - **Current Elo only:** A saved result stores the endpoint Elo of each mode (`1v1`, `2v2`, `3v3`, `Ranking`), plus the Elo the tournament started from and the one written back into the policy so a cached result stays verifiable. The per-round rating series and averaged Elo are discarded, so checkpoint JSON stays a compact record of the current rating instead of a rating history.
 - **Continuous rating:** The evaluated policy keeps the Elo it already carries — it never starts from the pool's mean or any other shared anchor. The tournament's endpoint is written back into that policy's own `RUNNING_STATS.json` (`skill_ratings`), so the next tournament starts where this one ended, and an accepted pool copy carries exactly the Elo it had when it was accepted. Opponents are only ever read.
 
+### Start-state randomness
+
+Sampled actions at temperature `1.0` are not the only source of variation: every round of a rating tournament also starts from its own randomized kickoff. Skill matches always install `RLGC::FuzzedKickoffState`, seeded per arena from the evaluation seed (`PrepareAnchoredPool`), and each arena re-draws from its own deterministic RNG stream on every reset — so rounds never replay the same start state, and the same seed still reproduces a rating exactly. Training does the same with `--fuzzed-kickoffs`, which `train_ranked.py` always appends and records as `runtime_overrides.fuzzed_kickoffs`. A rating whose `settings.fuzzed_kickoffs` is not `true` is rejected, so a recipe or protocol change cannot silently bring back repeated rounds.
+
 ## Evolving old-policy pool
 
 `--evolving-opponents` migrates/resumes a campaign with a single shared set of 10 historical policies for both `--train-vs-old`/skill matches and anchored evaluation. The initial set is sampled evenly across all available prior policy-version timestamps so it spans the historical range. Native automatic policy saving is effectively disabled; only the campaign's promotion gate changes the set.
