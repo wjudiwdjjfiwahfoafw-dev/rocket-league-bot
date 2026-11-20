@@ -692,6 +692,15 @@ static const std::map<std::string, std::string> REWARD_PRESETS = {
 	        "KickoffProximity=0,PickupBoost=0,Demo=0,Goal=750,GoalSpeed=110,ScorerAssist=75,Save=30,Shot=20,"
 	        "DirectionalTouch=16,ObjectiveBallVel=10,KickoffSpeed=6,TeamPressure=2,SoloDiscipline=0.7,"
 	        "DefensiveCover=0.6,DoubleCommit=1,PickupBoostZS=4,SaveBoost=0.05,DemoZS=15,Bump=3" },
+	// v5: v4 with FaceBall removed. FaceBallReward is rotMat.forward . normalize(ball - player), paid every step
+	// regardless of what the car is doing, so at 0.1 it paid ~0.032/step (~19-22 per 600-step episode, more than a
+	// whole Shot=20 event) for pointing the nose at the ball. By 1795 Elo that is a learned reflex, and the term's
+	// cheapest optimum is hovering near the ball facing it instead of committing to a play.
+	{ "v5", "Air=0.05,FaceBall=0,VelocityPlayerToBall=0,NearestVelocityToBall=0.5,TouchBall=0,Speed=0,"
+	        "TeamVelocityToBall=0,StrongTouch=0,TouchAccel=10,VelocityBallToGoal=0,BehindBall=0,TeamSpacing=0.75,"
+	        "KickoffProximity=0,PickupBoost=0,Demo=0,Goal=750,GoalSpeed=110,ScorerAssist=75,Save=30,Shot=20,"
+	        "DirectionalTouch=16,ObjectiveBallVel=10,KickoffSpeed=6,TeamPressure=2,SoloDiscipline=0.7,"
+	        "DefensiveCover=0.6,DoubleCommit=1,PickupBoostZS=4,SaveBoost=0.05,DemoZS=15,Bump=3" },
 };
 
 // Weights that differ from the defaults (--rewards)

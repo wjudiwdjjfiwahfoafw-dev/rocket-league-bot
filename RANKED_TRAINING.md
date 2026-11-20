@@ -70,6 +70,12 @@ the run config as `rewards`, `reward_weights`, and `reward_preset`.
   `Save 28 -> 30`, `Shot 18 -> 20`, `ObjectiveBallVel 6.5 -> 10`, `TeamPressure 1.6 -> 2`, `SoloDiscipline 0.55 -> 0.7`,
   `DefensiveCover 0.45 -> 0.6`, `DoubleCommit 0.9 -> 1`, `PickupBoostZS 3.5 -> 4`, `DemoZS 25 -> 15`, `Bump 4 -> 3`).
 
+- `v5` — `v4` without `FaceBall`. `FaceBallReward` is `rotMat.forward . normalize(ball - player)`, paid every step
+  no matter what the car is doing, so it is a reward for *looking* at the ball: at weight 0.1 it paid about
+  0.032 per step, i.e. ~19-22 per 600-step episode, more than a whole `Shot=20` event, and its cheapest optimum is
+  hovering near the ball with the nose pointed at it. Measured on the 4.2B-step policy the raw term averaged 0.32
+(on a fresh policy, 0.15), so the per-step figure is the weight times that fraction of steps.
+
 Keep `Goal` first when adding a term: a dense reward that out-earns a goal over an episode makes hovering and ball
 chasing optimal, which is exactly the plateau this preset set out to break.
 
