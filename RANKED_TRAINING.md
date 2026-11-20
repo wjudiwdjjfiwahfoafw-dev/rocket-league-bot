@@ -51,6 +51,28 @@ python3 tools/train_ranked.py \
 
 Sampled actions at temperature `1.0` are not the only source of variation: every round of a rating tournament also starts from its own randomized kickoff. Skill matches always install `RLGC::FuzzedKickoffState`, seeded per arena from the evaluation seed (`PrepareAnchoredPool`), and each arena re-draws from its own deterministic RNG stream on every reset — so rounds never replay the same start state, and the same seed still reproduces a rating exactly. Training does the same with `--fuzzed-kickoffs`, which `train_ranked.py` always appends and records as `runtime_overrides.fuzzed_kickoffs`. A rating whose `settings.fuzzed_kickoffs` is not `true` is rejected, so a recipe or protocol change cannot silently bring back repeated rounds.
 
+## Reward presets
+
+`--rewards` accepts either explicit `Name=weight` pairs or a named preset; every preset lists *all* weights, so a
+preset never inherits a changed default. The resolved weights are logged (`Rewards (preset v4): ...`) and recorded in
+the run config as `rewards`, `reward_weights`, and `reward_preset`.
+
+- `v3` — the recipe the 66-cycle campaign was trained with: `Goal=750` plus mode-aware event rewards, every dense
+  RLGym-style primitive off.
+- `v4` — resumes from a `v3` checkpoint with the dense shaping that RLGym ships by default switched back on, which is
+  the intended fix for the ~1795 Elo plateau: the policy was only paid for the outcome of a touch, never for the
+  approach. `Air=0.05` and `FaceBall=0.1` pay for aerial play, `TouchAccel=10` for flicks and power shots,
+  `TeamSpacing=0.75` for rotation, and `NearestVelocityToBall=0.5` for the nearest player of each team driving at the
+  ball. Each is deliberately below the weight the `RewardDefs` table suggests (0.1 / 0.25 / 15 / 1 / 0), because those
+  suggestions assume an episode with no event rewards, whereas here every term is layered on top of `Goal=750`.
+  `NearestVelocityToBall` stays at half of RLGym's `1.0` since `DirectionalTouch=16` and `ObjectiveBallVel=10` already
+  pay for ball advancement. `Goal` remains the anchor and the event rewards move only slightly (`GoalSpeed 120 -> 110`,
+  `Save 28 -> 30`, `Shot 18 -> 20`, `ObjectiveBallVel 6.5 -> 10`, `TeamPressure 1.6 -> 2`, `SoloDiscipline 0.55 -> 0.7`,
+  `DefensiveCover 0.45 -> 0.6`, `DoubleCommit 0.9 -> 1`, `PickupBoostZS 3.5 -> 4`, `DemoZS 25 -> 15`, `Bump 4 -> 3`).
+
+Keep `Goal` first when adding a term: a dense reward that out-earns a goal over an episode makes hovering and ball
+chasing optimal, which is exactly the plateau this preset set out to break.
+
 ## Evolving old-policy pool
 
 `--evolving-opponents` migrates/resumes a campaign with a single shared set of 10 historical policies for both `--train-vs-old`/skill matches and anchored evaluation. The initial set is sampled evenly across all available prior policy-version timestamps so it spans the historical range. Native automatic policy saving is effectively disabled; only the campaign's promotion gate changes the set.
