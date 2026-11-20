@@ -1802,7 +1802,10 @@ int RunRating(Learner* learner, const Options& opt, int numRounds) {
 		{ "arenas", tracker.numArenas }, { "sim_time", tracker.simTime }, { "max_sim_time", tracker.maxSimTime },
 		{ "tournament_elo_budget", tracker.tournamentEloBudget }, { "initial_rating", tracker.initialRating },
 		{ "deterministic", tracker.deterministic },
-		{ "policy_temperature", learner->config.ppo.policyTemperature }
+		{ "policy_temperature", learner->config.ppo.policyTemperature },
+		// Skill matches always install RLGC::FuzzedKickoffState, so every round of a tournament starts from its
+		//own kickoff: sampled actions at temperature 1 and these kickoffs are what keep rounds from repeating.
+		{ "fuzzed_kickoffs", true }
 	};
 
 	RG_LOG(RG_DIVIDER);
