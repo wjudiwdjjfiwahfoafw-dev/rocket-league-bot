@@ -1,17 +1,17 @@
 {
-  "checkpoint": 4341246702,
-  "identity": "1b63fde3e7cbd6371a39ce24437129bf7d68d388bbf7a38447a5c9017ff18a8c",
-  "created": 1795211708.4429064,
+  "checkpoint": 4360000017,
+  "identity": "d1ba85aaae5089a250d2b4cf4ee0e7bfe6ac42ea7c390a0040a22caff3afcada",
+  "created": 1795217330.2842064,
   "sha256": {
-    "learner/4341246702/CRITIC.lt": "bb4de30ae21d56457e237c256d80710ae86b40aa42d52bdcec494e67a7c3b413",
-    "learner/4341246702/CRITIC_OPTIM.lt": "87b0ea9fcf8f929363dd986e8a7ed2c8baec01202609d322e0fa0ea02d95d6d9",
-    "learner/4341246702/INFO.json": "ccbe24eb601372c9b5983f8d6eefea2ed69821c4f961526c472e507ed96041c1",
-    "learner/4341246702/POLICY.lt": "920152f73cc9bd027357b9943c6c51628ff2ccfd3895102681d0a67523ecc9de",
-    "learner/4341246702/POLICY_OPTIM.lt": "7c3b6fa5d0319e08fb8b897c31d50f9ebcdea8dc75f96e44c7e9d1ad26d87f71",
-    "learner/4341246702/RUNNING_STATS.json": "54d0023727c642b7abcfb56f8fa5636ccb2aedd781cba6fb80b3d9dddea0d627",
-    "learner/4341246702/SHARED_HEAD.lt": "10c6d71c820567359702c791b7afaeb32377179376fd724f4b8a43abe9d761c4",
-    "learner/4341246702/SHARED_HEAD_OPTIM.lt": "9067a0682b32b685ad641465b8d2b793b1f0b3221fb59764975e18564c00b5cd",
-    "learner/4341246702/SHARED_HEAD_SLOTS.lt": "beeab45d35c6cb0701a21be166e11203f8e5c57cf6073d8ca69544b914295372",
+    "learner/4360000017/CRITIC.lt": "53a12ca0760acb2b577000d27c555111c49f8244509fde9fba2425c6f89094ed",
+    "learner/4360000017/CRITIC_OPTIM.lt": "dd6018746d00c34255aef539d4ee9a4e1986bff182829e587a28e26d7c1bdfe5",
+    "learner/4360000017/INFO.json": "ccbe24eb601372c9b5983f8d6eefea2ed69821c4f961526c472e507ed96041c1",
+    "learner/4360000017/POLICY.lt": "ae338e65a23f8687a314cbe2e316bea7551a79dd60c7a3e73345ecac09a054d9",
+    "learner/4360000017/POLICY_OPTIM.lt": "cc46021339e985fbbf246a200030c5e0f7756f9eecce1b54b7675887619624a2",
+    "learner/4360000017/RUNNING_STATS.json": "7f34a4359f5bfff096678b9b440d9bd8c5f0e5612430db103da4203a91e70b11",
+    "learner/4360000017/SHARED_HEAD.lt": "925bab88e561525a795f7c59100475896750c50890c767d584d1d1b16e359200",
+    "learner/4360000017/SHARED_HEAD_OPTIM.lt": "dd60a1ccec982fd78b5733be3fcda2bca4dfa34b7a63654afff79fce997a0aea",
+    "learner/4360000017/SHARED_HEAD_SLOTS.lt": "ece19413f37885728f916525c98d1addd63fa0d374fc793acfc704f66b5e0e74",
     "learner/policy_versions/2800066152/POLICY.lt": "9e27d424d3ab46b29424f12d22ade61aec9c72e985e3f3207addc035f543522c",
     "learner/policy_versions/2800066152/SHARED_HEAD.lt": "b6448c8a36e3ac167a5a9152498a89127bf5a1702a36b686e4bf6f48dc4e5c5f",
     "learner/policy_versions/2800066152/SHARED_HEAD_SLOTS.lt": "9878db28cbc8a012b809cf76e9d5d95da5482982f1f0a9f64f6fd036e60ce194",
@@ -52,7 +52,7 @@
     "learner/policy_versions/3852989352/SHARED_HEAD.lt": "b6b6b6714d60d1a383d4fac666fb8fc0ea821ae4263391ce1ab98ac46bb7494f",
     "learner/policy_versions/3852989352/SHARED_HEAD_SLOTS.lt": "99aa081b4e5ef0ff2d1883bd9bed6b1a564ea6ddfa0ad89b7fda7494805af3ac",
     "learner/policy_versions/3852989352/STATS.json": "40e063ba2fb29c674f1647031247b271033ee0c04781d11b0619eda565250dac",
-    "state.json": "c285514edd18ed7e13b1cbea41e4d1259cdf41f46a65312ac1779cd92cb5bf91"
+    "state.json": "e0d4f026f996a4f8a14e1adfaa96a1ee27991c659ab1e4b4ac82e9e1f08d03f6"
   },
-  "source_commit": "8e986bd762106b55fecca807ce164a60ef7c407d"
+  "source_commit": "f54a5d673f5c0dafa2c07bb61df84103f30b87a1"
 }
