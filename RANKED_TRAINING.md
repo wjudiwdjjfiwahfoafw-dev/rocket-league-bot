@@ -118,6 +118,23 @@ python3 tools/verify_frozen_versions.py results/weights1700-v3/campaign
 - **Direct network (`--wandb-online` / `--wandb-offline`):** `tools/ranked_wandb.py` streams directly to online W&B or exports an offline run when direct outbound W&B access is available.
 - Reward-component diagnostics are sampled during training and appear under `Rewards/…`; use `python3 tools/resume_training.py --reward-metrics` to enable them on a resumed campaign without changing its frozen PPO/evaluation recipe. Lean-metrics campaigns can independently retain sampled per-player telemetry under `Player/…` with `python3 tools/resume_training.py --player-metrics`. Sparse JSONL/W&B output windows average ordinary numeric diagnostics across skipped iterations (while keeping cumulative counters and the timestep axis at their latest values); rating events are immediate and are never window-averaged. On this two-vCPU runner, `python3 tools/resume_training.py --throughput-profile cpu-20k` selects the fastest measured all-mode profile (64 games, one PPO epoch, one collection-inference thread); clean benchmarks peak near 19.5k overall SPS, though shared-host variability can lower that. The live run stores its delivery cursor in GitHub issue metadata, uses `Elo/…` for raw internal skill-tracker endpoints, and publishes neither `Live/…` nor `Stream/…` transport fields.
 
+### Where the W&B API key lives
+
+Three homes, best first:
+
+1. **Repository secret `WANDB_API_KEY`** — Settings -> Secrets and variables -> Actions -> New repository secret.
+   The relay then authenticates itself: `has_api_key` skips the sealed-key handshake, so no copy has to exist in the
+   sandbox and nothing can be lost when the sandbox restarts. Setting it needs admin rights on the repository; a
+   GitHub App integration token gets `403 Resource not accessible by integration` even though it can push.
+2. **`.secrets/wandb_api_key`** in the workspace, mode `600` — this is where the publisher looks when `/dev/shm` is
+   empty. `/.secrets/` is gitignored, so the automatic 30-minute backup worker (`git add -A`) can never commit it,
+   and it survives with the workspace across sandbox restarts.
+3. **`/dev/shm/.wandb_bridge_key`** — the default `--key-file`. It is tmpfs: wiped on restart, which is why the feed
+   went dark after the last cleanup. Good for one session, not for storage.
+
+Precedence is `WANDB_API_KEY` env, then `--key-file`, then `.secrets/wandb_api_key`. Never put a key in tracked files,
+and never in a path the backup worker stages.
+
 ## Regression tests
 
 ```bash

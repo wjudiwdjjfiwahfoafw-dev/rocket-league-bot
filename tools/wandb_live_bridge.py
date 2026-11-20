@@ -110,12 +110,28 @@ def rsa_oaep_open(priv_pem: bytes, sealed_b64: str) -> str:
     return pt.decode('utf-8').strip()
 
 
+PERSISTENT_KEY_FILE = Path(__file__).resolve().parents[1] / '.secrets' / 'wandb_api_key'
+
+
 def _load_local_wandb_key(key_file: Path) -> str:
+    """WANDB_API_KEY first, then --key-file, then the gitignored workspace copy.
+
+    /dev/shm is wiped when the sandbox restarts, so a key that lives only there has to be pasted again for
+    every session. .secrets/wandb_api_key lives with the workspace (and is gitignored, so the 30-minute
+    backup worker can never commit it). The repository secret WANDB_API_KEY is still the best home: the
+    relay then authenticates itself and needs no sandbox key at all.
+    """
     env_val = os.environ.get('WANDB_API_KEY', '').strip()
     if env_val:
         return env_val
-    if key_file.is_file():
-        return key_file.read_text(encoding='utf-8').strip()
+    for candidate in (key_file, PERSISTENT_KEY_FILE):
+        try:
+            if candidate.is_file():
+                key = candidate.read_text(encoding='utf-8').strip()
+                if key:
+                    return key
+        except OSError:
+            pass
     return ''
 
 
