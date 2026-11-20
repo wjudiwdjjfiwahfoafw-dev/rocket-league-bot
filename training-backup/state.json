@@ -91,7 +91,7 @@
       "training-backup/learner/policy_versions/3137998278"
     ]
   },
-  "pool_sha256": "dfb617f8edbb9a1cd030cfcaa9d8e47d70e14f08e44704857973eb704db94f38",
+  "pool_sha256": "6609c038ca1886e4dba1fb816203f612e186911af88250651d5df4192252a38b",
   "history": [
     {
       "stage": 0,
@@ -1624,6 +1624,46 @@
       "opponent_pool_promoted": false,
       "opponent_pool_margin": 50.0,
       "old_versions_verified": true
+    },
+    {
+      "stage": 44,
+      "start_steps": 3838160307,
+      "steps": 3852989352,
+      "train_seconds": 924.6537708249998,
+      "wall_seconds": 1173.304565077,
+      "steps_per_second": 12638.70050571807,
+      "screen": {
+        "1v1": 1628.1689453125,
+        "2v2": 1877.673095703125,
+        "3v3": 1834.6025390625,
+        "Ranking": 1780.148193359375
+      },
+      "confirm": {
+        "1v1": 1629.7265625,
+        "2v2": 1877.984130859375,
+        "3v3": 1836.516357421875,
+        "Ranking": 1781.4090169270833
+      },
+      "promoted": false,
+      "opponent_pool_steps": [
+        2729865360,
+        2800066152,
+        2836021944,
+        2988686064,
+        3137998278,
+        3256829382,
+        3282071802,
+        3309403092,
+        3337121412,
+        3486902757
+      ],
+      "opponent_pool_sha256": "dfb617f8edbb9a1cd030cfcaa9d8e47d70e14f08e44704857973eb704db94f38",
+      "opponent_pool_generation": 1,
+      "strongest_opponent_ranking": 1728.1972249348958,
+      "strongest_opponent_steps": 3486902757,
+      "opponent_pool_promoted": true,
+      "opponent_pool_margin": 50.0,
+      "old_versions_verified": true
     }
   ],
   "best": {
@@ -1643,10 +1683,10 @@
     "opponent_pool_sha256": "dfb617f8edbb9a1cd030cfcaa9d8e47d70e14f08e44704857973eb704db94f38"
   },
   "pending": {
-    "stage": 44,
-    "start_steps": 3838160307,
+    "stage": 45,
+    "start_steps": 3852989352,
     "seconds": 0,
-    "wall_seconds": 120.0592623349985,
+    "wall_seconds": 750.095158938002,
     "trained": false
   },
   "status": "paused",
@@ -1660,9 +1700,8 @@
     "evolving_opponents": true,
     "opponent_pool_size": 10,
     "promotion_margin": 50.0,
-    "pool_generation": 1,
+    "pool_generation": 2,
     "pool_steps": [
-      2729865360,
       2800066152,
       2836021944,
       2988686064,
@@ -1671,17 +1710,12 @@
       3282071802,
       3309403092,
       3337121412,
-      3486902757
+      3486902757,
+      3852989352
     ],
     "fuzzed_kickoffs": true
   },
   "frozen_versions": {
-    "2729865360": {
-      "POLICY.lt": "72e25c341cccfcf2d33c60ab58234890b1ae8ca783123a129b610a7df326fcf8",
-      "SHARED_HEAD.lt": "a26d841e80cd068ba9993729e3d51368dc41b6a5cdc95ad37a089fcc766d58ce",
-      "SHARED_HEAD_SLOTS.lt": "a3667349d1fa5536f0d5f708025412b29685157075c995d939ffe9da650dced2",
-      "STATS.json": "47f164d8f0f4be2a01a8bd13560bf9263ca4422483712c58d3c73d7feb68ede8"
-    },
     "2800066152": {
       "POLICY.lt": "9e27d424d3ab46b29424f12d22ade61aec9c72e985e3f3207addc035f543522c",
       "SHARED_HEAD.lt": "b6448c8a36e3ac167a5a9152498a89127bf5a1702a36b686e4bf6f48dc4e5c5f",
@@ -1735,6 +1769,12 @@
       "SHARED_HEAD.lt": "9a36a497f4ac16ce553505767520f27f161720550c5c2c3c6e1f4ca965052d62",
       "SHARED_HEAD_SLOTS.lt": "38375c049bb91ddc7f794642d87fcf19d6ec58df5d6955c779f6b2f699e1db9a",
       "STATS.json": "6940835f3cfef64a7fc04d3a7db602022d7eb03c8eff91367902d24547fa5129"
+    },
+    "3852989352": {
+      "POLICY.lt": "0c8f32e3aea727f28e715e67e7beb701ef331a9c0bd87e669536d80632353758",
+      "SHARED_HEAD.lt": "b6b6b6714d60d1a383d4fac666fb8fc0ea821ae4263391ce1ab98ac46bb7494f",
+      "SHARED_HEAD_SLOTS.lt": "99aa081b4e5ef0ff2d1883bd9bed6b1a564ea6ddfa0ad89b7fda7494805af3ac",
+      "STATS.json": "40e063ba2fb29c674f1647031247b271033ee0c04781d11b0619eda565250dac"
     }
   }
 }
