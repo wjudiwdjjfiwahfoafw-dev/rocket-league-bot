@@ -1384,29 +1384,69 @@
       "opponent_pool_promoted": false,
       "opponent_pool_margin": 50.0,
       "old_versions_verified": true
+    },
+    {
+      "stage": 38,
+      "start_steps": 3752877942,
+      "steps": 3767802747,
+      "train_seconds": 924.5671256480018,
+      "wall_seconds": 1193.1370772240007,
+      "steps_per_second": 12508.87704766047,
+      "screen": {
+        "1v1": 1611.09619140625,
+        "2v2": 1851.535888671875,
+        "3v3": 1832.76171875,
+        "Ranking": 1765.1312662760417
+      },
+      "confirm": {
+        "1v1": 1614.3338623046875,
+        "2v2": 1854.9261474609375,
+        "3v3": 1833.422119140625,
+        "Ranking": 1767.5607096354167
+      },
+      "promoted": true,
+      "opponent_pool_steps": [
+        2729865360,
+        2800066152,
+        2836021944,
+        2988686064,
+        3137998278,
+        3256829382,
+        3282071802,
+        3309403092,
+        3337121412,
+        3486902757
+      ],
+      "opponent_pool_sha256": "dfb617f8edbb9a1cd030cfcaa9d8e47d70e14f08e44704857973eb704db94f38",
+      "opponent_pool_generation": 1,
+      "strongest_opponent_ranking": 1728.1972249348958,
+      "strongest_opponent_steps": 3486902757,
+      "opponent_pool_promoted": false,
+      "opponent_pool_margin": 50.0,
+      "old_versions_verified": true
     }
   ],
   "best": {
-    "steps": 3596221197,
+    "steps": 3767802747,
     "screen": {
-      "1v1": 1606.4190673828125,
-      "2v2": 1848.4302978515625,
-      "3v3": 1811.7933349609375,
-      "Ranking": 1755.5475667317708
+      "1v1": 1611.09619140625,
+      "2v2": 1851.535888671875,
+      "3v3": 1832.76171875,
+      "Ranking": 1765.1312662760417
     },
     "confirm": {
-      "1v1": 1607.112060546875,
-      "2v2": 1848.273193359375,
-      "3v3": 1811.5216064453125,
-      "Ranking": 1755.6356201171875
+      "1v1": 1614.3338623046875,
+      "2v2": 1854.9261474609375,
+      "3v3": 1833.422119140625,
+      "Ranking": 1767.5607096354167
     },
     "opponent_pool_sha256": "dfb617f8edbb9a1cd030cfcaa9d8e47d70e14f08e44704857973eb704db94f38"
   },
   "pending": {
-    "stage": 38,
-    "start_steps": 3752877942,
+    "stage": 39,
+    "start_steps": 3767802747,
     "seconds": 0,
-    "wall_seconds": 150.04485990200192,
+    "wall_seconds": 750.0940149060007,
     "trained": false
   },
   "status": "paused",
