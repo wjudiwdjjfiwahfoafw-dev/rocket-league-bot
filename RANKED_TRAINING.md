@@ -135,6 +135,10 @@ Three homes, best first:
 Precedence is `WANDB_API_KEY` env, then `--key-file`, then `.secrets/wandb_api_key`. Never put a key in tracked files,
 and never in a path the backup worker stages.
 
+The repository secret is the configured path here: the relay reports `auth_mode=repo_secret` and the handshake never
+runs, so a sandbox copy should stay deleted. Delete a key the moment it is rotated out — a revoked key left in
+`/dev/shm` or `.secrets/` only makes the publisher answer a handshake with a credential that no longer works.
+
 ## Regression tests
 
 ```bash
