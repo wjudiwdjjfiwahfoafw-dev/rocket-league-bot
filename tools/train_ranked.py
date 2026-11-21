@@ -70,6 +70,29 @@ def policy_versions(root):
                   key=lambda p: int(p.name))
 
 
+def pool_size(pool):
+    """Number of policies in the opponent pool; the native rating tournament is sized by it."""
+    return len(policy_versions(pool))
+
+
+def rounds_for_pool(base_rounds, count):
+    """Round count the native anchored tournament accepts against a pool of `count` policies.
+
+    The native skill tracker requires the rating rounds to be a multiple of twice the number of
+    loaded policy versions, so every opponent is played equally often on both team colors. The
+    opponent pool of an evolving campaign grows while it runs, so the round count is derived from
+    the pool size at evaluation time instead of being fixed for the whole campaign. The derived
+    count is never below the requested budget, and it is a pure function of the budget and the
+    pool size, so a resumed campaign rates exactly the same rounds as the run before it.
+    """
+    if count < 1:
+        raise ValueError('The opponent pool must contain at least one policy')
+    if base_rounds < 1:
+        raise ValueError('The evaluation round budget must be positive')
+    step = 2 * count
+    return -(-base_rounds // step) * step
+
+
 def file_hashes(path):
     return {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(path.iterdir()) if p.is_file()}
@@ -419,14 +442,16 @@ def campaign(args):
             if getattr(args, 'extra_versions', None):
                 raise ValueError('--extra-versions cannot be combined with --evolving-opponents')
             pool_count = int(getattr(args, 'opponent_pool_size', 10))
-            if args.rounds % (2 * pool_count):
-                raise ValueError('--rounds must be a multiple of twice --opponent-pool-size')
+            if pool_count < 1:
+                raise ValueError('--opponent-pool-size must be at least 1')
+            # The pool starts with the policies history offers and grows through promotions, so the
+            # rating rounds are derived from the pool size at evaluation time, not fixed here.
             seed_policy_pool(src_pool, out / 'pool', pool_count)
             shutil.copytree(out / 'pool', learner / 'policy_versions')
         else:
             count = len(policy_versions(src_pool))
-            if not count or args.rounds % (2 * count):
-                raise ValueError('--rounds must be a multiple of twice the size of the (nonempty) pool')
+            if not count:
+                raise ValueError('The reference opponent pool is empty')
             shutil.copytree(src_pool, out / 'pool')
             shutil.copytree(src_pool, learner / 'policy_versions')
         # Optional stronger native sparring partners for learner/policy_versions ONLY; out/pool stays immutable.
@@ -474,8 +499,8 @@ def campaign(args):
         pool_count = int(getattr(args, 'opponent_pool_size', None) or existing_runtime.get('opponent_pool_size', 10))
         margin = float(getattr(args, 'promotion_margin', None) if getattr(args, 'promotion_margin', None) is not None
                        else existing_runtime.get('promotion_margin', 50.0))
-        if pool_count < 1 or args.rounds % (2 * pool_count):
-            raise ValueError('--rounds must be a multiple of twice --opponent-pool-size')
+        if pool_count < 1:
+            raise ValueError('--opponent-pool-size must be at least 1')
         if not existing_runtime.get('evolving_opponents'):
             # Migrate only at an explicit resume boundary. Keep the old frozen eval pool for provenance,
             # but seed both training and ratings from evenly spaced historical policy versions.
@@ -559,29 +584,47 @@ def campaign(args):
     if getattr(args, 'wandb_online', False):
         streamer = subprocess.Popen([sys.executable, str(REPO / 'tools/ranked_wandb.py'),
                                      str(out), '--out', str(out / 'online-stream'), '--online'])
-    evaluate = lambda p, seed, n, write_back=False: score(
-        args, p, seed, n, state['pool_sha256'], env, logdir, write_back=write_back)
+    def evaluate(p, seed, multiplier=1, write_back=False):
+        """Rate a policy against the pool as it is right now.
+
+        The native tournament needs a multiple of twice the pool size, and the pool of an
+        evolving campaign changes as qualified policies are promoted into it. The screen, the
+        confirmation, the incumbent rerating and the audit all read the current pool, so they all
+        use the round count that pool size allows. The confirmation keeps its twofold budget:
+        it runs exactly twice the rounds of the screen it confirms.
+        """
+        rounds = rounds_for_pool(args.rounds, pool_size(out / 'pool')) * multiplier
+        return score(args, p, seed, rounds, state['pool_sha256'], env, logdir, write_back=write_back)
+    def rerate_incumbent():
+        """Re-rate the current best against the pool as it is now, if the pool moved on.
+
+        A pool update changes the Elo scale: the incumbent has to meet the new opponent set to
+        be comparable with the candidate that is rated next. This runs before the first
+        comparison of a campaign and again after every pool change, so a promotion is never
+        decided by two Elo values that were measured against different opponents.
+        """
+        if not runtime_overrides.get('evolving_opponents', False):
+            return
+        if state.get('best') and state['best'].get('opponent_pool_sha256') == state['pool_sha256']:
+            return
+        state['status'] = 'evaluating'
+        write(statefile, state)
+        incumbent_steps = (state.get('best') or {}).get('steps')
+        incumbent = out / 'best' / str(incumbent_steps) if incumbent_steps is not None else None
+        if incumbent is None or not incumbent.is_dir():
+            incumbent = newest(learner)
+            incumbent_steps = int(incumbent.name)
+        incumbent_screen = evaluate(incumbent, SCREEN)
+        incumbent_confirm = evaluate(incumbent, CONFIRM, 2)
+        state['best'] = dict(steps=int(incumbent_steps), screen=incumbent_screen,
+                             confirm=incumbent_confirm,
+                             opponent_pool_sha256=state['pool_sha256'])
+        incumbent_copy = out / 'best' / str(incumbent_steps)
+        if not incumbent_copy.exists():
+            shutil.copytree(incumbent, incumbent_copy)
+        write(statefile, state)
     try:
-        # A pool update changes the Elo scale. Re-rate the incumbent against the current
-        # exact opponent set before comparing or promoting another checkpoint.
-        if runtime_overrides.get('evolving_opponents', False) and (
-                not state.get('best') or state['best'].get('opponent_pool_sha256') != state['pool_sha256']):
-            state['status'] = 'evaluating'
-            write(statefile, state)
-            incumbent_steps = (state.get('best') or {}).get('steps')
-            incumbent = out / 'best' / str(incumbent_steps) if incumbent_steps is not None else None
-            if incumbent is None or not incumbent.is_dir():
-                incumbent = newest(learner)
-                incumbent_steps = int(incumbent.name)
-            incumbent_screen = evaluate(incumbent, SCREEN, args.rounds)
-            incumbent_confirm = evaluate(incumbent, CONFIRM, 2 * args.rounds)
-            state['best'] = dict(steps=int(incumbent_steps), screen=incumbent_screen,
-                                 confirm=incumbent_confirm,
-                                 opponent_pool_sha256=state['pool_sha256'])
-            incumbent_copy = out / 'best' / str(incumbent_steps)
-            if not incumbent_copy.exists():
-                shutil.copytree(incumbent, incumbent_copy)
-            write(statefile, state)
+        rerate_incumbent()
         # Stage 0 is the parent, not a trained candidate. Later stages always continue the latest
         # weights, irrespective of short-term rating noise. Only the independent best copy is selected.
         stage = len(state['history'])
@@ -644,9 +687,15 @@ def campaign(args):
                     raise RuntimeError('Trainer policy versions do not match the frozen pool')
                 versions_verified = True
                 print(f'Frozen policy versions verified unchanged ({len(trainer_versions)})', flush=True)
+            # The pool may have grown since the last stage. Bring the incumbent onto the current
+            # Elo scale before the candidate is compared with it.
+            rerate_incumbent()
             pool_steps_before = [int(p.name) for p in policy_versions(out / 'pool')]
             pool_hash_before = state['pool_sha256']
-            screen = evaluate(ckpt, SCREEN, args.rounds, write_back=True)
+            # The rating rounds follow the pool that is rated right now; record them with the stage
+            # so a later reader can tell which tournament produced which Elo.
+            eval_rounds = rounds_for_pool(args.rounds, pool_size(out / 'pool'))
+            screen = evaluate(ckpt, SCREEN, write_back=True)
             best = state['best']
             confirm = None
             strongest = strongest_version = None
@@ -656,7 +705,7 @@ def campaign(args):
                 pool_screen_candidate = screen['Ranking'] >= strongest + float(runtime_overrides['promotion_margin'])
             if (best is None or screen['Ranking'] > best['screen']['Ranking'] or
                     pool_screen_candidate):
-                confirm = evaluate(ckpt, CONFIRM, 2 * args.rounds, write_back=True)
+                confirm = evaluate(ckpt, CONFIRM, 2, write_back=True)
             won = confirm is not None and promote(screen, confirm, best)
             pool_promoted = False
             if runtime_overrides.get('evolving_opponents', False) and confirm is not None:
@@ -686,6 +735,7 @@ def campaign(args):
             entry = dict(stage=i, start_steps=pending['start_steps'], steps=steps,
                          train_seconds=seconds, wall_seconds=wall_seconds,
                          steps_per_second=(delta_steps / wall_seconds) if (minutes and wall_seconds > 0) else None,
+                         eval_rounds=eval_rounds, eval_rounds_confirm=2 * eval_rounds,
                          screen=screen, confirm=confirm, promoted=won,
                          opponent_pool_steps=pool_steps_before, opponent_pool_sha256=pool_hash_before,
                          opponent_pool_generation=int(runtime_overrides.get('pool_generation', 0)) -
@@ -727,7 +777,7 @@ def campaign(args):
         for cand in (out / 'best' / str(state['best']['steps']), newest(learner)):
             if all(p.name != cand.name for p in audit_targets):
                 audit_targets.append(cand)
-        state['audit'] = {p.name: evaluate(p, config['audit_seed'], 2 * args.rounds) for p in audit_targets}
+        state['audit'] = {p.name: evaluate(p, config['audit_seed'], 2) for p in audit_targets}
         if wb is not None:
             ranked_wandb.log_audit(wb, state)
         state['status'] = 'complete'
@@ -766,9 +816,14 @@ def main():
     parser.add_argument('--base', type=Path, required=True, help='Full numbered S checkpoint with a sibling policy_versions pool')
     parser.add_argument('--out', type=Path, required=True, help='Fresh campaign directory or a matching campaign to resume')
     parser.add_argument('--bot', type=Path, default=Path('build/GigaLearnBot'))
-    for name, default in [('minutes', 180), ('pilot-minutes', 6), ('block-minutes', 30), ('rounds', 40),
+    for name, default in [('minutes', 180), ('pilot-minutes', 6), ('block-minutes', 30),
                           ('minibatch', 1008), ('threads', 2), ('seed', 20261118)]:
         parser.add_argument('--' + name, type=int, default=default)
+    # The anchored tournament needs a multiple of twice the opponent count, so --rounds is a budget:
+    # every evaluation derives the smallest valid count at least as large as it.
+    parser.add_argument('--rounds', type=int, default=40,
+                        help='Rating round budget per screen; the actual count follows the opponent '
+                             'pool size (a multiple of twice the pool size, never below the budget)')
     parser.add_argument('--wandb-offline', action='store_true', help='Write a syncable W&B run in --out; no credential or network needed')
     parser.add_argument('--wandb-online', action='store_true', help='Tail metrics to W&B online in a separate sandbox process; requires W&B credentials/network')
     parser.add_argument('--wandb-bridge', action='store_true', help='Stream live metrics to W&B via the GitHub Actions cloud relay even when direct W&B egress is blocked')

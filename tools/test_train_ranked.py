@@ -332,6 +332,115 @@ class RankingTests(unittest.TestCase):
             self.assertEqual(train_cmd[train_cmd.index('--max-versions') + 1], '10')
             self.assertEqual(train_cmd[train_cmd.index('--ts-per-version') + 1], '9000000000000000')
 
+    def test_rounds_for_pool_derives_a_count_every_pool_size_accepts(self):
+        # The native anchored tournament only accepts a multiple of twice the opponent count, so
+        # every pool size an evolving campaign can reach needs its own valid round count.
+        for count in range(1, 16):
+            rounds = ranked.rounds_for_pool(40, count)
+            self.assertEqual(rounds % (2 * count), 0)
+            self.assertGreaterEqual(rounds, 40)
+            self.assertLess(rounds, 40 + 2 * count)
+        # The reachable sizes of a 10 -> 15 pool, with the counts a 40-round budget derives.
+        self.assertEqual([ranked.rounds_for_pool(40, n) for n in range(10, 16)],
+                         [40, 44, 48, 52, 56, 60])
+        # A budget below one full cycle still yields a complete, balanced set of fixtures.
+        self.assertEqual(ranked.rounds_for_pool(1, 10), 20)
+        self.assertEqual(ranked.rounds_for_pool(3, 1), 4)
+        # The derivation is a pure function of budget and pool size, so a resumed campaign rates
+        # exactly the same rounds as the run before it.
+        self.assertEqual(ranked.rounds_for_pool(40, 11), ranked.rounds_for_pool(40, 11))
+        with self.assertRaises(ValueError):
+            ranked.rounds_for_pool(40, 0)
+        with self.assertRaises(ValueError):
+            ranked.rounds_for_pool(0, 10)
+
+    def test_growing_pool_changes_the_rating_rounds_and_rerates_the_incumbent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base, out = root / 'checkpoints/100', root / 'campaign'
+            base.mkdir(parents=True)
+            out.mkdir()
+            bot = root / 'GigaLearnBot'
+            bot.touch()
+            (root / 'train_1v1_2v2_3v3.sh').touch()
+            ranked.write(base / 'INFO.json', {'model': 's'})
+            ranked.write(base / 'RUNNING_STATS.json', dict(total_timesteps=100, mirror_x=-1,
+                                                            skill_ratings={m: 1500 for m in MODES}))
+            for name in (*ranked.MODELS, *(k + '_OPTIM' for k in ranked.MODELS), 'SHARED_HEAD_SLOTS'):
+                (base / (name + '.lt')).write_bytes(b'weights')
+            versions = base.parent / 'policy_versions'
+            for step in range(1, 11):
+                version = versions / str(step)
+                version.mkdir(parents=True)
+                for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
+                    (version / name).write_bytes(f'{step}-{name}'.encode())
+                ranked.write(version / 'STATS.json', {'skill_ratings': {m: 1500 + step for m in MODES}})
+            args = argparse.Namespace(
+                base=base, out=out, bot=bot, minutes=2, pilot_minutes=1, block_minutes=1,
+                rounds=40, threads=1, minibatch=1008, seed=1, audit_seed=9007,
+                wandb_offline=False, wandb_online=False, wandb_bridge=False, github_backup=False,
+                reward_metrics=False, player_metrics=False, throughput_profile=None, continuous=False,
+                evolving_opponents=True, opponent_pool_size=15, promotion_margin=50.0,
+                reference_pool=None, extra_versions=None, target_ranking=None, stop_on_target=False,
+                rewards=None,
+            )
+            trainings, ratings = [], []
+
+            def native(cmd, env, log, heartbeat=None):
+                checkpoints = Path(cmd[cmd.index('--checkpoints') + 1])
+                if cmd[0] == 'bash':
+                    trainings.append(len(trainings))
+                    parent = ranked.newest(checkpoints)
+                    candidate = checkpoints / str(100 + 20 * len(trainings))
+                    shutil.copytree(parent, candidate)
+                    ranked.write(candidate / 'RUNNING_STATS.json', dict(
+                        total_timesteps=int(candidate.name), mirror_x=-1,
+                        skill_ratings={m: 1700 for m in MODES}))
+                    return
+                candidate_path = ranked.newest(Path(cmd[cmd.index('--checkpoints') + 1]))
+                step = int(candidate_path.name)
+                seed = int(cmd[cmd.index('--seed') + 1])
+                rounds = int(cmd[cmd.index('--rate-rounds') + 1])
+                pool = Path(cmd[cmd.index('--rate-versions') + 1])
+                refs = {int(p.name): ranked.read(p / 'STATS.json')['skill_ratings']
+                        for p in ranked.policy_versions(pool)}
+                ratings.append((step, seed, rounds, len(refs)))
+                start = ranked.checkpoint_elo(candidate_path) or {m: 1500.0 for m in MODES}
+                elo = {m: value + 10.0 for m, value in start.items()}
+                ratings_json = {m: {'start': start[m], 'average': elo[m] - 25, 'end': elo[m]} for m in MODES}
+                ratings_json['Ranking'] = {'start': sum(start.values()) / 3,
+                                           'average': sum(elo.values()) / 3 - 25,
+                                           'end': sum(elo.values()) / 3}
+                ranked.write(cmd[cmd.index('--rate-out') + 1], dict(
+                    anchored=True, seed=seed, rounds=rounds, checkpoint_timesteps=step,
+                    settings={'deterministic': False, 'policy_temperature': 1.0, 'fuzzed_kickoffs': True},
+                    ratings=ratings_json,
+                    opponents=[dict(timesteps=t, rounds=rounds // len(refs), ratings=r)
+                               for t, r in refs.items()],
+                    mode_goals={m: {'for': 3, 'against': 1} for m in MODES}))
+
+            with patch.object(ranked, 'run', native), patch.object(ranked, 'REPO', root), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ranked.campaign(args)
+            state = ranked.read(out / 'state.json')
+            self.assertEqual(state['status'], 'complete')
+            # The pool started with the ten historical policies and grew through the promotion.
+            self.assertEqual(len(ranked.policy_versions(out / 'pool')), 11)
+            # Every rating ran a round count the native tournament accepts for its pool: a
+            # multiple of twice the opponent count, and never below the 40-round budget.
+            for step, seed, rounds, pool_count in ratings:
+                self.assertEqual(rounds % (2 * pool_count), 0)
+                self.assertGreaterEqual(rounds, 40)
+            # The ten-policy pool rates with 40 rounds; the eleven-policy pool with 44.
+            self.assertEqual({rounds for _, _, rounds, count in ratings if count == 10}, {40, 80})
+            self.assertEqual({rounds for _, _, rounds, count in ratings if count == 11}, {44, 88})
+            # The incumbent was re-rated onto the new pool before the next candidate was rated.
+            incumbent_reratings = [r for r in ratings if r[0] == 120]
+            self.assertTrue(incumbent_reratings)
+            self.assertEqual({rounds for _, _, rounds, _ in incumbent_reratings}, {40, 80, 44, 88})
+            self.assertEqual(state['history'][-1]['eval_rounds'], 44)
+            self.assertEqual(state['history'][-1]['eval_rounds_confirm'], 88)
+
     def test_tournament_elo_is_continuous_and_written_back(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
