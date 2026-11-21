@@ -89,8 +89,13 @@ def snapshot_layout(campaign, state, latest):
         versions = sorted((p for p in policy_pool.iterdir() if p.is_dir() and p.name.isdecimal()),
                           key=lambda p: int(p.name))
         expected = int(state['runtime_overrides'].get('opponent_pool_size', 10))
-        if len(versions) != expected:
-            raise RuntimeError(f'Evolving policy pool has {len(versions)} entries; expected {expected}')
+        # The pool of an evolving campaign starts with the policies history offers and grows
+        # through promotions until it reaches its target size, so a smaller pool is expected
+        # while it is still filling up. Only a pool that outgrew its target is a fault.
+        if len(versions) > expected:
+            raise RuntimeError(f'Evolving policy pool has {len(versions)} entries; expected at most {expected}')
+        if not versions:
+            raise RuntimeError('Evolving policy pool is empty; nothing to back up')
         verify_frozen_versions(versions, state)
         return [latest, policy_pool], ['learner/' + latest.name, 'learner/policy_versions'], True
     return ([latest, policy_pool, campaign / 'pool', campaign / 'best' / str(state['best']['steps'])],

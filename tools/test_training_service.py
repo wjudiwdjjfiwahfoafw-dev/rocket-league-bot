@@ -51,6 +51,34 @@ class BackupIntervalTests(unittest.TestCase):
             self.assertEqual(targets, ['learner/9000', 'learner/policy_versions'])
             self.assertEqual(len(list(versions.iterdir())), 10)
 
+    def test_evolving_backup_accepts_a_pool_that_is_still_growing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = Path(tmp) / 'campaign'
+            latest = campaign / 'learner/9000'
+            latest.mkdir(parents=True)
+            versions = campaign / 'learner/policy_versions'
+            versions.mkdir()
+            # A campaign that asks for fifteen policies but only has ten so far is still filling up.
+            for step in range(10):
+                (versions / str(step)).mkdir()
+            sources, targets, evolving = snapshot_layout(
+                campaign, {'runtime_overrides': {'evolving_opponents': True, 'opponent_pool_size': 15}}, latest)
+            self.assertTrue(evolving)
+            self.assertEqual(sources, [latest, versions])
+            self.assertEqual(targets, ['learner/9000', 'learner/policy_versions'])
+            # A pool that outgrew its target is a fault and must stop the backup.
+            for step in range(10, 16):
+                (versions / str(step)).mkdir()
+            with self.assertRaises(RuntimeError):
+                snapshot_layout(
+                    campaign, {'runtime_overrides': {'evolving_opponents': True, 'opponent_pool_size': 15}}, latest)
+            # An empty pool has nothing to restore.
+            for version in versions.iterdir():
+                version.rmdir()
+            with self.assertRaises(RuntimeError):
+                snapshot_layout(
+                    campaign, {'runtime_overrides': {'evolving_opponents': True, 'opponent_pool_size': 15}}, latest)
+
     def test_backup_rejects_a_rewritten_old_policy_version(self):
         with tempfile.TemporaryDirectory() as tmp:
             versions = Path(tmp) / 'policy_versions'
