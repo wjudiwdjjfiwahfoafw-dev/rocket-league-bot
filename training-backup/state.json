@@ -1883,8 +1883,8 @@
   "pending": {
     "stage": 48,
     "start_steps": 4862898357,
-    "seconds": 0,
-    "wall_seconds": 540.0920740520014,
+    "seconds": 914.2800452459996,
+    "wall_seconds": 914.3190468739995,
     "trained": false
   },
   "status": "paused",
