@@ -138,6 +138,33 @@ class WandbLiveBridgeTest(unittest.TestCase):
             self.assertEqual(decoded['rows'][-1]['Total Timesteps'], snap['rows'][-1]['Total Timesteps'])
             self.assertEqual(len(decoded['state']['history']), 2)
 
+    def test_publish_digest_notices_an_evaluation_only_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_campaign(root, num_rows=6)
+            snap = bridge.read_campaign_snapshot(root)
+            before = bridge.snapshot_digest(snap, 'training')
+            self.assertTrue(snap['eval_extras'])
+            # A new anchored evaluation changes the published body, so the digest has to change
+            # even though no metric row and no stage was added.
+            (root / 'eval/9999999999-1009-44.json').write_text(json.dumps({
+                'checkpoint_timesteps': 9999999999,
+                'seed': 1009,
+                'rounds': 44,
+                'kickoff_first_touches_for': 100,
+                'kickoff_first_touches_against': 90,
+                'goals_for': 10,
+                'goals_against': 5,
+                'mode_goals': {'1v1': {'for': 4, 'against': 2}},
+            }) + '\n')
+            after = bridge.read_campaign_snapshot(root)
+            self.assertNotEqual(before, bridge.snapshot_digest(after, 'training'))
+            self.assertEqual(len(after['rows']), len(snap['rows']))
+            self.assertEqual(len(after['state']['history']), len(snap['state']['history']))
+            # The same snapshot always digests the same way, so the publisher does not churn.
+            self.assertEqual(bridge.snapshot_digest(after, 'training'),
+                             bridge.snapshot_digest(after, 'training'))
+
     def test_load_relay_cursor_removes_legacy_stream_summary_fields(self):
         summary = {
             'Stream/Last Timesteps': 100,

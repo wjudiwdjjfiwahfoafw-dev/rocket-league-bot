@@ -263,6 +263,27 @@ def campaign_run_id(config, prefix='rlbot-v4'):
     return f'{prefix}-{config.get("parent_steps", "run")}-{digest}'
 
 
+def snapshot_digest(snapshot: dict, state_status: str) -> str:
+    """Fingerprint of everything the published Issue body carries.
+
+    The anchored evaluation files are part of that body, so a change in them has to count as a
+    change: without them an evaluation that only refreshes an already known stage would leave the
+    published snapshot untouched and its numbers stale.
+    """
+    rows = snapshot.get('rows') or []
+    state = snapshot.get('state') or {}
+    return hashlib.sha256(json.dumps({
+        'rows_len': len(rows),
+        'last_step': rows[-1]['Total Timesteps'] if rows else -1,
+        'history_len': len(state.get('history') or []),
+        'status': state_status,
+        'audit': bool(state.get('audit')),
+        'run_id': snapshot['run_id'],
+        'eval_extras': hashlib.sha256(
+            json.dumps(snapshot.get('eval_extras') or {}, sort_keys=True).encode()).hexdigest(),
+    }, sort_keys=True).encode()).hexdigest()
+
+
 def read_campaign_snapshot(campaign: Path) -> dict:
     """Read atomic state.json + completed JSONL metric lines without locking the trainer."""
     state = json.loads((campaign / 'state.json').read_text())
@@ -589,14 +610,7 @@ def run_publisher(args):
                     break
             relay_ready = bool(relay_meta and relay_meta.get('run_url') and relay_meta.get('run_id') == snap['run_id'])
             body, included = encode_snapshot_body(snap)
-            digest = hashlib.sha256(json.dumps({
-                'rows_len': len(snap['rows']),
-                'last_step': snap['rows'][-1]['Total Timesteps'] if snap['rows'] else -1,
-                'history_len': len((snap['state'].get('history') or [])),
-                'status': state_status,
-                'audit': bool(snap['state'].get('audit')),
-                'run_id': snap['run_id'],
-            }, sort_keys=True).encode()).hexdigest()
+            digest = snapshot_digest(snap, state_status)
             if digest != last_digest:
                 gh_api_json('PATCH', f'issues/{issue_number}', {'body': body}, repo=repo)
                 last_digest = digest
