@@ -102,7 +102,22 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 	}
 	TuneMemoryAllocator();
 
+	// The embedded interpreter must use the standard library of the same Python installation this
+	// build links against (its headers and libpython). CPython normally derives that from the
+	// interpreter's own location, but it only does so when it knows the interpreter's path.
+	// Point it at the interpreter this build was configured with, so the two can never drift apart
+	// (a mismatched standard library loads modules that were not built against this libpython).
+#if PY_VERSION_HEX >= 0x03080000
+	PyConfig pyConfig;
+	PyConfig_InitPythonConfig(&pyConfig);
+	pyConfig.parse_argv = 0;
+	pyConfig.install_signal_handlers = 1;
+	if (PyStatus_Exception(PyConfig_SetBytesString(&pyConfig, &pyConfig.program_name, PY_EXEC_PATH)) != 0)
+		throw std::runtime_error("Failed to point the embedded Python interpreter at " + std::string(PY_EXEC_PATH));
+	pybind11::initialize_interpreter(&pyConfig);
+#else
 	pybind11::initialize_interpreter();
+#endif
 
 #ifndef NDEBUG
 	RG_LOG("===========================");
