@@ -32,6 +32,30 @@ python3 tools/train_ranked.py \
   --github-backup --backup-interval 1800 --wandb-bridge
 ```
 
+To continue the v5 recipe from the newest canonical checkpoint with a rolling opponent pool that grows from the ten historical policies towards fifteen, in endless train/evaluate cycles:
+
+```bash
+python3 tools/train_ranked.py \
+  --base training-backup/learner/4876757727 \
+  --out results/weights1700-v6/campaign \
+  --minutes 4320 --pilot-minutes 15 --block-minutes 30 --rounds 40 \
+  --seed 20261121 --audit-seed 4001 \
+  --evolving-opponents --opponent-pool-size 15 --promotion-margin 50.0 \
+  --continuous --throughput-profile cpu-20k --reward-metrics --player-metrics \
+  --lr 9e-5 --critic-lr 0.00022 --epochs 2 --entropy-scale 0.008 \
+  --norm-advantages mode --target-kl 0.02 --gamma 0.995 \
+  --return-stat-max-count 200000 --random-state-prob 0.0 --tactical-state-prob 0.15 \
+  --train-vs-old 0.5 --ts-per-version 20m --max-versions 14 \
+  --skill-minutes 25.0 --ts-per-save 10m \
+  --mask-entropy --fuzzed-kickoffs --rewards v5 \
+  --github-backup --backup-interval 1800 --wandb-bridge
+```
+
+The seed pool is the `policy_versions` folder next to `--base`; the campaign copies it into its own
+directory and never trains in the canonical snapshot. In `--continuous` mode the block length, not
+`--minutes`, decides how long each training stage runs, and the campaign repeats until it is
+interrupted.
+
 ## Fixed-pool evaluation protocol
 
 `Rating/Ranking = (1v1 Elo + 2v2 Elo + 3v3 Elo) / 3` using native sampled actions at softmax temperature `1.0` (`deterministic=False`, `policy_temperature=1.0`).
