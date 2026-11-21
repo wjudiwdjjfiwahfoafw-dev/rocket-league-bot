@@ -1,6 +1,0 @@
-{
-    "model": "s",
-    "modes": "1v1,2v2,3v3",
-    "obs": "MultiModeObs",
-    "rewards": "SaveBoost=0.06, Bump=4, Goal=750, ObjectiveBallVel=6.5, DirectionalTouch=16, GoalSpeed=120, ScorerAssist=85, Shot=18, Save=28, KickoffSpeed=5.5, TeamPressure=1.6, SoloDiscipline=0.55, DefensiveCover=0.45, DoubleCommit=0.9, PickupBoostZS=3.5, DemoZS=25"
-}

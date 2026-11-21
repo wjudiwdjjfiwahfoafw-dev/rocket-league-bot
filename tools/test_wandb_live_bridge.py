@@ -187,5 +187,36 @@ class WandbLiveBridgeTest(unittest.TestCase):
         self.assertEqual(opened, sample)
 
 
+    def test_wandb_key_falls_back_to_the_gitignored_workspace_copy(self):
+        import os
+        import subprocess
+        from unittest import mock
+
+        root = Path(bridge.__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            shm = Path(tmp) / 'ephemeral_key'
+            persistent = Path(tmp) / 'persistent_key'
+            with mock.patch.object(bridge, 'PERSISTENT_KEY_FILE', persistent), \
+                    mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop('WANDB_API_KEY', None)
+                # Nothing anywhere: no key, no crash.
+                self.assertEqual(bridge._load_local_wandb_key(shm), '')
+                # Only the workspace copy exists, as after a sandbox restart wipes /dev/shm.
+                persistent.write_text('from-workspace\n', encoding='utf-8')
+                self.assertEqual(bridge._load_local_wandb_key(shm), 'from-workspace')
+                # The ephemeral file wins over the workspace copy.
+                shm.write_text('from-shm\n', encoding='utf-8')
+                self.assertEqual(bridge._load_local_wandb_key(shm), 'from-shm')
+                # WANDB_API_KEY wins over both.
+                os.environ['WANDB_API_KEY'] = 'from-env'
+                self.assertEqual(bridge._load_local_wandb_key(shm), 'from-env')
+
+        # The default location must be inside the repo and ignored by git, or the automatic
+        # backup worker would commit the key on its next 30-minute snapshot.
+        default = bridge.PERSISTENT_KEY_FILE
+        self.assertTrue(str(default).startswith(str(root)))
+        checked = subprocess.run(['git', 'check-ignore', '-q', str(default)], cwd=root)
+        self.assertEqual(checked.returncode, 0, f'{default} must be gitignored')
+
 if __name__ == '__main__':
     unittest.main()

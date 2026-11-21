@@ -63,7 +63,13 @@ def _add_aggregate(aggregate, metrics):
 		if not math.isfinite(number):
 			aggregate[key] = {"last": None}
 			continue
-		entry = aggregate.setdefault(key, {"sum": 0.0, "count": 0, "last": value})
+		# A metric that was undefined or non-finite in an earlier report only carries "last", so a later
+		# numeric report has to upgrade that placeholder: setdefault would keep the "sum"-less dict and
+		# raise KeyError ('Episode Length' is null until the first episode ends; rating keys appear late).
+		entry = aggregate.get(key)
+		if entry is None or "sum" not in entry or "count" not in entry:
+			entry = {"sum": 0.0, "count": 0, "last": value}
+			aggregate[key] = entry
 		entry["sum"] += number
 		entry["count"] += 1
 		entry["last"] = value

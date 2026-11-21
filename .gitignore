@@ -53,3 +53,6 @@ __pycache__/
 /metrics_1v1_2v2/
 /checkpoints/
 /results/
+
+# Local credential drop (the W&B publisher reads .secrets/wandb_api_key when /dev/shm is empty)
+/.secrets/

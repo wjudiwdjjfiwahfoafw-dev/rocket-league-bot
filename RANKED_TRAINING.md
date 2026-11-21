@@ -51,6 +51,34 @@ python3 tools/train_ranked.py \
 
 Sampled actions at temperature `1.0` are not the only source of variation: every round of a rating tournament also starts from its own randomized kickoff. Skill matches always install `RLGC::FuzzedKickoffState`, seeded per arena from the evaluation seed (`PrepareAnchoredPool`), and each arena re-draws from its own deterministic RNG stream on every reset — so rounds never replay the same start state, and the same seed still reproduces a rating exactly. Training does the same with `--fuzzed-kickoffs`, which `train_ranked.py` always appends and records as `runtime_overrides.fuzzed_kickoffs`. A rating whose `settings.fuzzed_kickoffs` is not `true` is rejected, so a recipe or protocol change cannot silently bring back repeated rounds.
 
+## Reward presets
+
+`--rewards` accepts either explicit `Name=weight` pairs or a named preset; every preset lists *all* weights, so a
+preset never inherits a changed default. The resolved weights are logged (`Rewards (preset v4): ...`) and recorded in
+the run config as `rewards`, `reward_weights`, and `reward_preset`.
+
+- `v3` — the recipe the 66-cycle campaign was trained with: `Goal=750` plus mode-aware event rewards, every dense
+  RLGym-style primitive off.
+- `v4` — resumes from a `v3` checkpoint with the dense shaping that RLGym ships by default switched back on, which is
+  the intended fix for the ~1795 Elo plateau: the policy was only paid for the outcome of a touch, never for the
+  approach. `Air=0.05` and `FaceBall=0.1` pay for aerial play, `TouchAccel=10` for flicks and power shots,
+  `TeamSpacing=0.75` for rotation, and `NearestVelocityToBall=0.5` for the nearest player of each team driving at the
+  ball. Each is deliberately below the weight the `RewardDefs` table suggests (0.1 / 0.25 / 15 / 1 / 0), because those
+  suggestions assume an episode with no event rewards, whereas here every term is layered on top of `Goal=750`.
+  `NearestVelocityToBall` stays at half of RLGym's `1.0` since `DirectionalTouch=16` and `ObjectiveBallVel=10` already
+  pay for ball advancement. `Goal` remains the anchor and the event rewards move only slightly (`GoalSpeed 120 -> 110`,
+  `Save 28 -> 30`, `Shot 18 -> 20`, `ObjectiveBallVel 6.5 -> 10`, `TeamPressure 1.6 -> 2`, `SoloDiscipline 0.55 -> 0.7`,
+  `DefensiveCover 0.45 -> 0.6`, `DoubleCommit 0.9 -> 1`, `PickupBoostZS 3.5 -> 4`, `DemoZS 25 -> 15`, `Bump 4 -> 3`).
+
+- `v5` — `v4` without `FaceBall`. `FaceBallReward` is `rotMat.forward . normalize(ball - player)`, paid every step
+  no matter what the car is doing, so it is a reward for *looking* at the ball: at weight 0.1 it paid about
+  0.032 per step, i.e. ~19-22 per 600-step episode, more than a whole `Shot=20` event, and its cheapest optimum is
+  hovering near the ball with the nose pointed at it. Measured on the 4.2B-step policy the raw term averaged 0.32
+(on a fresh policy, 0.15), so the per-step figure is the weight times that fraction of steps.
+
+Keep `Goal` first when adding a term: a dense reward that out-earns a goal over an episode makes hovering and ball
+chasing optimal, which is exactly the plateau this preset set out to break.
+
 ## Evolving old-policy pool
 
 `--evolving-opponents` migrates/resumes a campaign with a single shared set of 10 historical policies for both `--train-vs-old`/skill matches and anchored evaluation. The initial set is sampled evenly across all available prior policy-version timestamps so it spans the historical range. Native automatic policy saving is effectively disabled; only the campaign's promotion gate changes the set.
@@ -95,6 +123,27 @@ python3 tools/verify_frozen_versions.py results/weights1700-v3/campaign
 - **Sandboxed / restricted network (`--wandb-bridge`):** `tools/wandb_live_bridge.py publish` writes compact compressed metric frames to a branch telemetry issue; `.github/workflows/wandb-live.yml` streams them live to online W&B (`step_metric='Total Timesteps'`), authenticating via repository secret `WANDB_API_KEY` or an ephemeral RSA-3072-OAEP-SHA256 handshake against `/dev/shm/.wandb_bridge_key` (never stored in Git or logs).
 - **Direct network (`--wandb-online` / `--wandb-offline`):** `tools/ranked_wandb.py` streams directly to online W&B or exports an offline run when direct outbound W&B access is available.
 - Reward-component diagnostics are sampled during training and appear under `Rewards/…`; use `python3 tools/resume_training.py --reward-metrics` to enable them on a resumed campaign without changing its frozen PPO/evaluation recipe. Lean-metrics campaigns can independently retain sampled per-player telemetry under `Player/…` with `python3 tools/resume_training.py --player-metrics`. Sparse JSONL/W&B output windows average ordinary numeric diagnostics across skipped iterations (while keeping cumulative counters and the timestep axis at their latest values); rating events are immediate and are never window-averaged. On this two-vCPU runner, `python3 tools/resume_training.py --throughput-profile cpu-20k` selects the fastest measured all-mode profile (64 games, one PPO epoch, one collection-inference thread); clean benchmarks peak near 19.5k overall SPS, though shared-host variability can lower that. The live run stores its delivery cursor in GitHub issue metadata, uses `Elo/…` for raw internal skill-tracker endpoints, and publishes neither `Live/…` nor `Stream/…` transport fields.
+
+### Where the W&B API key lives
+
+Three homes, best first:
+
+1. **Repository secret `WANDB_API_KEY`** — Settings -> Secrets and variables -> Actions -> New repository secret.
+   The relay then authenticates itself: `has_api_key` skips the sealed-key handshake, so no copy has to exist in the
+   sandbox and nothing can be lost when the sandbox restarts. Setting it needs admin rights on the repository; a
+   GitHub App integration token gets `403 Resource not accessible by integration` even though it can push.
+2. **`.secrets/wandb_api_key`** in the workspace, mode `600` — this is where the publisher looks when `/dev/shm` is
+   empty. `/.secrets/` is gitignored, so the automatic 30-minute backup worker (`git add -A`) can never commit it,
+   and it survives with the workspace across sandbox restarts.
+3. **`/dev/shm/.wandb_bridge_key`** — the default `--key-file`. It is tmpfs: wiped on restart, which is why the feed
+   went dark after the last cleanup. Good for one session, not for storage.
+
+Precedence is `WANDB_API_KEY` env, then `--key-file`, then `.secrets/wandb_api_key`. Never put a key in tracked files,
+and never in a path the backup worker stages.
+
+The repository secret is the configured path here: the relay reports `auth_mode=repo_secret` and the handshake never
+runs, so a sandbox copy should stay deleted. Delete a key the moment it is rotated out — a revoked key left in
+`/dev/shm` or `.secrets/` only makes the publisher answer a handshake with a credential that no longer works.
 
 ## Regression tests
 

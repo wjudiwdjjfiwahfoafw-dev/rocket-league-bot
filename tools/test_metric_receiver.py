@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / 'GigaLearnCPP/python_scripts'))
 import metric_receiver  # noqa: E402
 
 
+
 class MetricReceiverThroughputTests(unittest.TestCase):
     def test_sparse_rows_average_skipped_iterations_and_keep_cumulative_counters(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -190,3 +191,13 @@ class MetricReceiverThroughputTests(unittest.TestCase):
                         metric_receiver.os.environ.pop(k, None)
                     else:
                         metric_receiver.os.environ[k] = v
+
+    def test_undefined_then_numeric_metric_keeps_aggregating(self):
+        # "Episode Length" is null until the first episode ends, so its aggregate starts as {"last": None}
+        aggregate = {}
+        metric_receiver._add_aggregate(aggregate, {'Episode Length': None, 'Total Iterations': 1})
+        metric_receiver._add_aggregate(aggregate, {'Episode Length': 4.0, 'Total Iterations': 2})
+        metric_receiver._add_aggregate(aggregate, {'Episode Length': 6.0, 'Total Iterations': 3})
+        payload = metric_receiver._take_aggregate(aggregate)
+        self.assertEqual(payload['Episode Length'], 5.0)
+        self.assertEqual(payload['Total Iterations'], 3)

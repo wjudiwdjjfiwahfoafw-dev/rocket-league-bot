@@ -671,16 +671,60 @@ static const std::vector<RewardDef> REWARD_DEFS = {
 	{ "DemoZS", 0, []() -> Reward* { return new ZeroSumReward(new DemoReward(), 0.5f); }, "demolishing opponents while avoiding being demolished (zero-sum)" },
 };
 
+// Named reward presets for --rewards. Every preset lists all weights explicitly, so a preset never
+// silently inherits a changed default. "v3" is the recipe the 66-cycle campaign was trained with;
+// "v4" restores the dense per-step shaping that RLGym ships by default (player-to-ball speed, touch
+// acceleration, air/face micro-shaping, team spacing) which v3 had switched off, and rebalances the
+// event rewards around it.
+static const std::map<std::string, std::string> REWARD_PRESETS = {
+	{ "v3", "Air=0,FaceBall=0,VelocityPlayerToBall=0,NearestVelocityToBall=0,TeamVelocityToBall=0,StrongTouch=0,"
+	        "TouchAccel=0,VelocityBallToGoal=0,BehindBall=0,TeamSpacing=0,PickupBoost=0,Demo=0,Goal=750,"
+	        "GoalSpeed=120,ScorerAssist=85,Save=28,Shot=18,DirectionalTouch=16,ObjectiveBallVel=6.5,"
+	        "KickoffSpeed=5.5,TeamPressure=1.6,SoloDiscipline=0.55,DefensiveCover=0.45,DoubleCommit=0.9,"
+	        "PickupBoostZS=3.5,SaveBoost=0.06,DemoZS=25,Bump=4" },
+	// v4: the event rewards of v3 (Goal stays the anchor at 750) plus the dense RLGym-style shaping that v3 had
+	// turned off, at weights below the REWARD_DEFS suggestions because those suggestions assume no event rewards:
+	// Air 0.05 (vs 0.1) and FaceBall 0.1 (vs 0.25) pay for aerial play, TouchAccel 10 (vs 15) for flicks and power
+	// shots, TeamSpacing 0.75 (vs 1) for rotation, NearestVelocityToBall 0.5 for the nearest player of each team
+	// driving at the ball (0.5, not RLGym's 1.0, because DirectionalTouch/ObjectiveBallVel already pay for it).
+	{ "v4", "Air=0.05,FaceBall=0.1,VelocityPlayerToBall=0,NearestVelocityToBall=0.5,TouchBall=0,Speed=0,"
+	        "TeamVelocityToBall=0,StrongTouch=0,TouchAccel=10,VelocityBallToGoal=0,BehindBall=0,TeamSpacing=0.75,"
+	        "KickoffProximity=0,PickupBoost=0,Demo=0,Goal=750,GoalSpeed=110,ScorerAssist=75,Save=30,Shot=20,"
+	        "DirectionalTouch=16,ObjectiveBallVel=10,KickoffSpeed=6,TeamPressure=2,SoloDiscipline=0.7,"
+	        "DefensiveCover=0.6,DoubleCommit=1,PickupBoostZS=4,SaveBoost=0.05,DemoZS=15,Bump=3" },
+	// v5: v4 with FaceBall removed. FaceBallReward is rotMat.forward . normalize(ball - player), paid every step
+	// regardless of what the car is doing, so at 0.1 it paid ~0.032/step (~19-22 per 600-step episode, more than a
+	// whole Shot=20 event) for pointing the nose at the ball. By 1795 Elo that is a learned reflex, and the term's
+	// cheapest optimum is hovering near the ball facing it instead of committing to a play.
+	{ "v5", "Air=0.05,FaceBall=0,VelocityPlayerToBall=0,NearestVelocityToBall=0.5,TouchBall=0,Speed=0,"
+	        "TeamVelocityToBall=0,StrongTouch=0,TouchAccel=10,VelocityBallToGoal=0,BehindBall=0,TeamSpacing=0.75,"
+	        "KickoffProximity=0,PickupBoost=0,Demo=0,Goal=750,GoalSpeed=110,ScorerAssist=75,Save=30,Shot=20,"
+	        "DirectionalTouch=16,ObjectiveBallVel=10,KickoffSpeed=6,TeamPressure=2,SoloDiscipline=0.7,"
+	        "DefensiveCover=0.6,DoubleCommit=1,PickupBoostZS=4,SaveBoost=0.05,DemoZS=15,Bump=3" },
+};
+
 // Weights that differ from the defaults (--rewards)
 static std::map<std::string, float> g_RewardWeights = {};
+static std::string g_RewardPreset = {};
 
 float GetRewardWeight(const RewardDef& def) {
 	auto itr = g_RewardWeights.find(def.name);
 	return (itr != g_RewardWeights.end()) ? itr->second : def.weight;
 }
 
-// "VelocityBallToGoal=6,Air=0" -> g_RewardWeights
+// "VelocityBallToGoal=6,Air=0" -> g_RewardWeights; a bare preset name ("v4") expands to its weights
 void ParseRewardWeights(std::string str) {
+	if (!str.empty() && str.find('=') == std::string::npos) {
+		auto preset = REWARD_PRESETS.find(str);
+		if (preset == REWARD_PRESETS.end()) {
+			std::string names = {};
+			for (auto& pair : REWARD_PRESETS)
+				names += (names.empty() ? "" : ", ") + pair.first;
+			RG_ERR_CLOSE("Option --rewards: \"" << str << "\" is neither Name=weight nor a preset (available: " << names << ")");
+		}
+		g_RewardPreset = str;
+		str = preset->second;
+	}
 	g_RewardWeights.clear();
 
 	std::stringstream stream(str);
@@ -1201,7 +1245,7 @@ static const OptionDef OPTION_DEFS[] = {
 	{ "random-car-speed", NULL, "Random states: the cars start with a random speed and spin, instead of at rest" },
 	{ "random-cars-in-air", NULL, "Random states: half of the cars start in the air with a random orientation, instead of all on the ground" },
 	{ "no-touch-timeout", "10", "Seconds without a ball touch before an episode is cut off, 0 = never" },
-	{ "rewards", "", "Reward weights that differ from the defaults, e.g. \"VelocityBallToGoal=6,Air=0\" (0 = off), see the list below" },
+	{ "rewards", "", "Reward weights that differ from the defaults, e.g. \"VelocityBallToGoal=6,Air=0\" (0 = off), see the list below — or a named preset: v3 (the 66-cycle campaign), v4 (dense RLGym-style shaping restored)" },
 	{ "seed", "123", "Random seed of the training or the evaluation, -1 = use the current time" },
 	{ "ts-per-save", "1000000", "Timesteps between checkpoints" },
 	{ "keep-checkpoints", "8", "Number of checkpoints kept before the oldest are deleted, -1 = keep all" },
@@ -2086,6 +2130,7 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 		j["ts_per_save"] = cfg.tsPerSave;
 		j["rewards"] = GetRewardSummary();
 		j["reward_changes"] = opt.Str("rewards");
+		j["reward_preset"] = g_RewardPreset;
 		for (auto& def : REWARD_DEFS)
 			j["reward_weights"][def.name] = GetRewardWeight(def);
 		j["skill_tracker"] = cfg.skillTracker.enabled;
@@ -2142,7 +2187,7 @@ int RunTraining(const Options& opt, std::filesystem::path exeDir) {
 			"\tRandom states: ball speed up to " << g_RandomBallSpeed << ", cars " << (g_RandomCarSpeed ? "moving" : "at rest") <<
 			", " << (g_RandomCarsInAir ? "half of them in the air" : "on the ground"));
 	}
-	RG_LOG("\tRewards: " << GetRewardSummary());
+	RG_LOG("\tRewards" << (g_RewardPreset.empty() ? "" : " (preset " + g_RewardPreset + ")") << ": " << GetRewardSummary());
 	bool ratingSessions = cfg.skillTracker.enabled && cfg.skillTracker.updateIntervalMinutes > 0;
 	if (cfg.skillTracker.enabled) {
 		std::string when = ratingSessions ?
