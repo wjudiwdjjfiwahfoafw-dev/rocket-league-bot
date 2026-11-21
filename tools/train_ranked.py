@@ -131,7 +131,12 @@ def copy_policy_version(source, destination):
 def seed_policy_pool(source, destination, count):
     destination.mkdir(parents=True, exist_ok=False)
     try:
-        for version in diverse_versions(source, count):
+        # A campaign can ask for a bigger pool than history offers. Seed with everything that exists (evenly
+        # spaced, so it still spans the historical range) and let promotions grow the pool to `count`; nothing
+        # is evicted until the pool actually exceeds `count`. This is what makes a 10 -> 15 pool change possible
+        # without inventing historical policies that were never saved.
+        available = len(policy_versions(source))
+        for version in diverse_versions(source, min(count, available)):
             copy_policy_version(version, destination / version.name)
     except Exception:
         shutil.rmtree(destination, ignore_errors=True)
@@ -152,16 +157,18 @@ def replace_policy_pool(source, destination):
 
 
 def add_policy_to_pool(checkpoint_path, pool, count):
-    """Add a qualified current policy and evict the oldest timestamp, FIFO."""
+    """Add a qualified current policy, then evict the oldest timestamp FIFO once the pool is full."""
     target = pool / checkpoint_path.name
     if target.exists():
         return False
     copy_policy_version(checkpoint_path, target)
     versions = policy_versions(pool)
+    # FIFO eviction only once the pool is over its target: a pool that is still filling up keeps every
+    # member, and the promotion gate keeps comparing against whichever member is currently strongest.
     while len(versions) > count:
         shutil.rmtree(versions.pop(0))
-    if len(versions) != count:
-        raise ValueError(f'Evolving opponent pool must contain exactly {count} policies')
+    if len(versions) > count:
+        raise ValueError(f'Evolving opponent pool cannot exceed {count} policies')
     return True
 
 

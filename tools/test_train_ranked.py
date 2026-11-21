@@ -65,6 +65,44 @@ class RankingTests(unittest.TestCase):
             self.assertNotIn(100, promoted)
             self.assertIn(1200, promoted)
 
+    def test_pool_grows_to_the_requested_size_before_it_evicts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, pool = root / 'source', root / 'pool'
+            source.mkdir()
+            for step in (100, 200, 300, 400):
+                version = source / str(step)
+                version.mkdir()
+                for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
+                    (version / name).write_bytes(f'{step}-{name}'.encode())
+                ranked.write(version / 'STATS.json', {'skill_ratings': {m: 1500.0 for m in MODES}})
+
+            # Asking for more policies than history holds must seed what exists instead of raising, so a
+            # 10 -> 15 pool increase works on a campaign that only ever saved 10 versions.
+            ranked.seed_policy_pool(source, pool, 6)
+            self.assertEqual(len(ranked.policy_versions(pool)), 4)
+
+            # Promotions fill the pool without evicting anything...
+            for step in (500, 600, 700):
+                candidate = root / str(step)
+                candidate.mkdir()
+                for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
+                    (candidate / name).write_bytes(f'{step}-{name}'.encode())
+                ranked.write(candidate / 'RUNNING_STATS.json', {'skill_ratings': {m: 1700.0 for m in MODES}})
+                self.assertTrue(ranked.add_policy_to_pool(candidate, pool, 6))
+                self.assertEqual(len(ranked.policy_versions(pool)), min(4 + (step - 400) // 100, 6))
+            # The pool is full at six, so the seventh member already evicted the oldest one.
+            self.assertEqual([int(p.name) for p in ranked.policy_versions(pool)], [200, 300, 400, 500, 600, 700])
+
+            # ...and from then on FIFO eviction keeps it at the requested size.
+            final = root / '800'
+            final.mkdir()
+            for name in ('POLICY.lt', 'SHARED_HEAD.lt', 'SHARED_HEAD_SLOTS.lt'):
+                (final / name).write_bytes(b'800')
+            ranked.write(final / 'RUNNING_STATS.json', {'skill_ratings': {m: 1700.0 for m in MODES}})
+            self.assertTrue(ranked.add_policy_to_pool(final, pool, 6))
+            self.assertEqual([int(p.name) for p in ranked.policy_versions(pool)], [300, 400, 500, 600, 700, 800])
+
     def test_promotion_requires_margin_over_strongest_policy_in_both_evals(self):
         with tempfile.TemporaryDirectory() as tmp:
             pool = Path(tmp)
